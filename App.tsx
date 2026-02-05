@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
@@ -309,6 +308,98 @@ const App: React.FC = () => {
     setActiveTab('dashboard');
   };
 
+  // ======== ✅ CLOUD FUNCTIONS MOVED ABOVE CONDITIONAL RETURN (FIX HOOKS ORDER) ========
+
+  // Cloud Sync Actions
+  const cloudPull = async () => {
+    if (!cloudEnabled) return;
+    if (!isSupabaseEnabled) {
+      setCloudStatus({ lastError: 'Supabase not configured' });
+      alert('Supabase غير مُعد. ضع VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY أولاً.');
+      return;
+    }
+
+    try {
+      setCloudStatus(prev => ({ ...prev, lastError: undefined }));
+
+      const [rClients, rCases, rInvoices, rExpenses, rConfig, rLogs] = await Promise.all([
+        kvGet('clients'),
+        kvGet('cases'),
+        kvGet('invoices'),
+        kvGet('expenses'),
+        kvGet('config'),
+        kvGet('logs')
+      ]);
+
+      if (rClients?.data) setClients(rClients.data as Client[]);
+      if (rCases?.data) setCases(rCases.data as LegalCase[]);
+      if (rInvoices?.data) setInvoices(rInvoices.data as Invoice[]);
+      if (rExpenses?.data) setExpenses(rExpenses.data as Expense[]);
+      if (rConfig?.data) setSystemConfig(withSafeConfigDefaults(rConfig.data as any));
+      if (rLogs?.data) setSystemLogs(rLogs.data as SystemLog[]);
+
+      cloudReadyRef.current = true;
+      setCloudStatus(prev => ({ ...prev, lastPull: new Date().toISOString() }));
+      logAction(adminProfile?.name || 'Admin', 'Admin', 'Cloud Pull');
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      setCloudStatus(prev => ({ ...prev, lastError: msg }));
+      alert('فشل تحميل البيانات من السحابة.\n' + msg);
+    }
+  };
+
+  const cloudPush = async () => {
+    if (!cloudEnabled) return;
+    if (!isSupabaseEnabled) {
+      setCloudStatus({ lastError: 'Supabase not configured' });
+      alert('Supabase غير مُعد. ضع VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY أولاً.');
+      return;
+    }
+
+    try {
+      setCloudStatus(prev => ({ ...prev, lastError: undefined }));
+
+      await Promise.all([
+        kvSet('clients', clients),
+        kvSet('cases', cases),
+        kvSet('invoices', invoices),
+        kvSet('expenses', expenses),
+        kvSet('config', systemConfig),
+        kvSet('logs', systemLogs)
+      ]);
+
+      cloudReadyRef.current = true;
+      setCloudStatus(prev => ({ ...prev, lastPush: new Date().toISOString() }));
+      logAction(adminProfile?.name || 'Admin', 'Admin', 'Cloud Push');
+    } catch (e: any) {
+      const msg = e?.message || String(e);
+      setCloudStatus(prev => ({ ...prev, lastError: msg }));
+      alert('فشل رفع البيانات للسحابة.\n' + msg);
+    }
+  };
+
+  // Auto cloud pull after admin login (one-time unless you Pull/Push manually)
+  useEffect(() => {
+    if (userRole !== UserRole.ADMIN) return;
+    if (!cloudEnabled || !isSupabaseEnabled) return;
+    if (cloudReadyRef.current) return;
+    void cloudPull();
+  }, [userRole, cloudEnabled, isSupabaseEnabled]);
+
+  // Auto cloud push (debounced)
+  useEffect(() => {
+    if (!cloudEnabled || !isSupabaseEnabled) return;
+    if (!cloudReadyRef.current) return;
+
+    const t = window.setTimeout(() => {
+      void cloudPush();
+    }, 2000);
+
+    return () => window.clearTimeout(t);
+  }, [cloudEnabled, isSupabaseEnabled, clients, cases, invoices, expenses, systemConfig, systemLogs]);
+
+  // ======== ✅ IMPORTANT: Conditional return AFTER ALL HOOKS ========
+
   if (!userRole) {
     return <Login onLogin={handleLogin} clients={clients} config={systemConfig} />;
   }
@@ -334,6 +425,7 @@ const App: React.FC = () => {
   };
 
   const handleAddInvoice = (newInvoice: Invoice) => setInvoices([newInvoice, ...invoices]);
+
   const normalizeExpenseKey = (e: Expense) => {
     const d = (e.date || '').slice(0, 10);
     const amt = Number(e.amount || 0).toFixed(2);
@@ -408,95 +500,6 @@ const App: React.FC = () => {
       alert('تعذر استعادة النسخة. تأكد من صحة ملف JSON.');
     }
   };
-
-  // Cloud Sync Actions
-  const cloudPull = async () => {
-    if (!cloudEnabled) return;
-    if (!isSupabaseEnabled) {
-      setCloudStatus({ lastError: 'Supabase not configured' });
-      alert('Supabase غير مُعد. ضع VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY أولاً.');
-      return;
-    }
-
-    try {
-      setCloudStatus(prev => ({ ...prev, lastError: undefined }));
-
-      const [rClients, rCases, rInvoices, rExpenses, rConfig, rLogs] = await Promise.all([
-        kvGet('clients'),
-        kvGet('cases'),
-        kvGet('invoices'),
-        kvGet('expenses'),
-        kvGet('config'),
-        kvGet('logs')
-      ]);
-
-      if (rClients?.data) setClients(rClients.data as Client[]);
-      if (rCases?.data) setCases(rCases.data as LegalCase[]);
-      if (rInvoices?.data) setInvoices(rInvoices.data as Invoice[]);
-      if (rExpenses?.data) setExpenses(rExpenses.data as Expense[]);
-      if (rConfig?.data) setSystemConfig(withSafeConfigDefaults(rConfig.data as any));
-      if (rLogs?.data) setSystemLogs(rLogs.data as SystemLog[]);
-
-      cloudReadyRef.current = true;
-      setCloudStatus(prev => ({ ...prev, lastPull: new Date().toISOString() }));
-      logAction(adminProfile?.name || 'Admin', 'Admin', 'Cloud Pull');
-    } catch (e: any) {
-      const msg = e?.message || String(e);
-      setCloudStatus(prev => ({ ...prev, lastError: msg }));
-      alert('فشل تحميل البيانات من السحابة.\n' + msg);
-    }
-  };
-  const cloudPush = async () => {
-    if (!cloudEnabled) return;
-    if (!isSupabaseEnabled) {
-      setCloudStatus({ lastError: 'Supabase not configured' });
-      alert('Supabase غير مُعد. ضع VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY أولاً.');
-      return;
-    }
-
-    try {
-      setCloudStatus(prev => ({ ...prev, lastError: undefined }));
-
-      await Promise.all([
-        kvSet('clients', clients),
-        kvSet('cases', cases),
-        kvSet('invoices', invoices),
-        kvSet('expenses', expenses),
-        kvSet('config', systemConfig),
-        kvSet('logs', systemLogs)
-      ]);
-
-      cloudReadyRef.current = true;
-      setCloudStatus(prev => ({ ...prev, lastPush: new Date().toISOString() }));
-      logAction(adminProfile?.name || 'Admin', 'Admin', 'Cloud Push');
-    } catch (e: any) {
-      const msg = e?.message || String(e);
-      setCloudStatus(prev => ({ ...prev, lastError: msg }));
-      alert('فشل رفع البيانات للسحابة.\n' + msg);
-    }
-  };
-
-
-  // Auto cloud pull after admin login (one-time unless you Pull/Push manually)
-  useEffect(() => {
-    if (userRole !== UserRole.ADMIN) return;
-    if (!cloudEnabled || !isSupabaseEnabled) return;
-    if (cloudReadyRef.current) return;
-    void cloudPull();
-  }, [userRole, cloudEnabled, isSupabaseEnabled]);
-
-  // Auto cloud push (debounced)
-  useEffect(() => {
-    if (!cloudEnabled || !isSupabaseEnabled) return;
-    if (!cloudReadyRef.current) return;
-
-    const t = window.setTimeout(() => {
-      void cloudPush();
-    }, 2000);
-
-    return () => window.clearTimeout(t);
-  }, [cloudEnabled, isSupabaseEnabled, clients, cases, invoices, expenses, systemConfig, systemLogs]);
-
 
   const renderContent = () => {
     switch (activeTab) {
