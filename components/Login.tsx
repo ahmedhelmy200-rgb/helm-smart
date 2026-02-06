@@ -1,7 +1,6 @@
-
-import React, { useState } from 'react';
-import { UserRole, Client, SystemConfig } from '../types';
-import { ICONS } from '../constants';
+import React, { useMemo, useState } from "react";
+import { UserRole, Client, SystemConfig } from "../types";
+import { ICONS } from "../constants";
 
 interface LoginProps {
   onLogin: (role: UserRole, data?: any) => void;
@@ -9,135 +8,349 @@ interface LoginProps {
   config?: SystemConfig;
 }
 
+type AdminAccount = {
+  username: string;
+  password: string;
+  name: string;
+  title: string;
+  id: string;
+};
+
+const DEFAULT_CLIENT_PASSWORD = "784";
+const CLIENT_PW_PREFIX = "legalmaster_client_pw_"; // + client.id
+
+// ✅ Admin accounts (Local-first; later we can move to Settings/config)
+const ADMIN_ACCOUNTS: AdminAccount[] = [
+  {
+    username: "ahmed",
+    password: "1",
+    name: "المستشار/ أحمد حلمي",
+    title: "المدير العام",
+    id: "owner",
+  },
+  {
+    username: "samar",
+    password: "2",
+    name: "أ/ سمر العبد",
+    title: "مساعدة المدير",
+    id: "assistant_manager",
+  },
+  {
+    username: "admin",
+    password: "123456",
+    name: "مسؤول إداري",
+    title: "إدارة المكتب",
+    id: "admin",
+  },
+];
+
+const normalizeEmiratesId = (s: string) =>
+  (s || "").trim().replace(/\s+/g, "").replace(/[^0-9]/g, ""); // keep digits only
+
 const Login: React.FC<LoginProps> = ({ onLogin, clients, config }) => {
-  const [loginMode, setLoginMode] = useState<'ADMIN' | 'CLIENT'>('ADMIN');
-  const [adminPass, setAdminPass] = useState('');
-  
-  const [clientIdInput, setClientIdInput] = useState('');
-  const [clientPhoneInput, setClientPhoneInput] = useState('');
-  const [error, setError] = useState('');
+  const [loginMode, setLoginMode] = useState<"ADMIN" | "CLIENT">("ADMIN");
+
+  // Admin
+  const [adminUsername, setAdminUsername] = useState("");
+  const [adminPass, setAdminPass] = useState("");
+
+  // Client
+  const [clientIdInput, setClientIdInput] = useState("");
+  const [clientPassInput, setClientPassInput] = useState("");
+
+  const [error, setError] = useState("");
+
+  const palette = useMemo(() => {
+    // Light calm palette (override old navy/gold defaults)
+    return {
+      bg: "#f6f7fb",
+      card: "#ffffff",
+      text: "#0f172a",
+      muted: "#64748b",
+      border: "#e2e8f0",
+      primary: "#2563eb", // calm blue
+      primary2: "#60a5fa",
+      accent: "#22c55e", // green hint for success
+    };
+  }, []);
 
   const handleAdminLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    
-    if (adminPass === '1') {
-      // Owner Login (Ahmed Helmy)
-      onLogin(UserRole.ADMIN, { name: 'المستشار/ أحمد حلمي', id: 'owner', title: 'المدير العام' });
-    } else if (adminPass === '2') {
-      // Finance Manager Login (Samar Elabd) - Same permissions
-      onLogin(UserRole.ADMIN, { name: 'أ/ سمر العبد', id: 'finance_manager', title: 'المدير المالي' });
-    } else if (adminPass === '123456') {
-      // General Admin Login
-      onLogin(UserRole.ADMIN, { name: 'مسؤول إداري', id: 'admin', title: 'إدارة المكتب' });
-    } else {
-      setError('كلمة المرور غير صحيحة');
+    setError("");
+
+    const u = adminUsername.trim().toLowerCase();
+    const p = adminPass;
+
+    const hit = ADMIN_ACCOUNTS.find(
+      (a) => a.username === u && a.password === p
+    );
+
+    if (!hit) {
+      setError("بيانات دخول الإدارة غير صحيحة (اسم المستخدم أو كلمة المرور).");
+      return;
+    }
+
+    onLogin(UserRole.ADMIN, {
+      name: hit.name,
+      id: hit.id,
+      title: hit.title,
+    });
+  };
+
+  const getClientStoredPassword = (client: Client) => {
+    try {
+      const k = CLIENT_PW_PREFIX + client.id;
+      const saved = localStorage.getItem(k);
+      return saved && saved.trim() ? saved.trim() : DEFAULT_CLIENT_PASSWORD;
+    } catch {
+      return DEFAULT_CLIENT_PASSWORD;
     }
   };
 
   const handleClientLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    const client = clients.find(c => c.emiratesId === clientIdInput && c.phone.replace(/\s/g, '') === clientPhoneInput.replace(/\s/g, ''));
-    
-    if (client) {
-      onLogin(UserRole.CLIENT, client);
-    } else {
-      setError('بيانات الدخول غير صحيحة. يرجى التأكد من رقم الهوية ورقم الهاتف المسجل.');
+    setError("");
+
+    const idDigits = normalizeEmiratesId(clientIdInput);
+    if (!idDigits) {
+      setError("أدخل رقم الهوية بشكل صحيح.");
+      return;
     }
+
+    const client = clients.find(
+      (c) => normalizeEmiratesId(c.emiratesId || "") === idDigits
+    );
+
+    if (!client) {
+      setError("رقم الهوية غير موجود ضمن بيانات الموكلين.");
+      return;
+    }
+
+    const expected = getClientStoredPassword(client);
+    if ((clientPassInput || "").trim() !== expected) {
+      setError("كلمة مرور الموكل غير صحيحة.");
+      return;
+    }
+
+    onLogin(UserRole.CLIENT, client);
   };
 
   return (
-    <div className="min-h-screen bg-[#0f172a] flex items-center justify-center p-6 relative overflow-hidden">
-      {/* Decorative background elements */}
-      <div className="absolute top-0 right-0 w-96 h-96 bg-[#d4af37] opacity-5 blur-[120px] -mr-48 -mt-48 rounded-full"></div>
-      <div className="absolute bottom-0 left-0 w-96 h-96 bg-blue-500 opacity-5 blur-[120px] -ml-48 -mb-48 rounded-full"></div>
-
-      <div className="w-full max-w-lg bg-white/5 backdrop-blur-xl border border-white/10 rounded-[3rem] p-10 shadow-2xl relative z-10">
-        <div className="text-center mb-8">
-          <div className="w-24 h-24 bg-gradient-to-tr from-[#d4af37] to-[#b8960c] rounded-[2rem] flex items-center justify-center shadow-2xl shadow-amber-600/20 mx-auto mb-6 overflow-hidden">
+    <div
+      className="min-h-screen flex items-center justify-center p-6"
+      style={{
+        background: `radial-gradient(1200px 600px at 20% 10%, rgba(37,99,235,0.10), transparent 60%),
+                     radial-gradient(900px 500px at 80% 20%, rgba(34,197,94,0.08), transparent 55%),
+                     ${palette.bg}`,
+      }}
+    >
+      <div
+        className="w-full max-w-lg rounded-[28px] shadow-2xl overflow-hidden"
+        style={{ background: palette.card, border: `1px solid ${palette.border}` }}
+      >
+        {/* Header */}
+        <div className="p-8 pb-6 text-center">
+          <div
+            className="w-20 h-20 mx-auto rounded-2xl flex items-center justify-center mb-4"
+            style={{
+              background: `linear-gradient(135deg, ${palette.primary}, ${palette.primary2})`,
+              boxShadow: "0 20px 40px rgba(37,99,235,0.18)",
+            }}
+          >
             {config?.logo ? (
-              <img src={config.logo} className="w-full h-full object-contain p-2" alt="Logo" />
+              <img
+                src={config.logo}
+                className="w-full h-full object-contain p-2"
+                alt="Logo"
+              />
             ) : (
-              <ICONS.Logo className="w-14 h-14 text-[#0f172a]" />
+              <ICONS.Logo className="w-10 h-10 text-white" />
             )}
           </div>
-          <h1 className="text-3xl font-black text-[#d4af37] tracking-tight">{config?.officeName || 'مكتب المستشار أحمد حلمي'}</h1>
-          <p className="text-slate-400 text-sm font-bold mt-2 uppercase tracking-[0.2em]">{config?.officeSlogan || 'بوابة الخدمات القانونية الرقمية'}</p>
+
+          <h1 className="text-2xl font-black" style={{ color: palette.text }}>
+            {config?.officeName || "مكتب المستشار أحمد حلمي"}
+          </h1>
+          <p className="text-sm font-bold mt-2" style={{ color: palette.muted }}>
+            {config?.officeSlogan || "بوابة الخدمات القانونية الرقمية"}
+          </p>
         </div>
 
         {/* Tabs */}
-        <div className="flex bg-black/20 p-1 rounded-2xl mb-8">
-          <button 
-            onClick={() => { setLoginMode('ADMIN'); setError(''); }}
-            className={`flex-1 py-3 rounded-xl font-bold text-sm transition-all ${loginMode === 'ADMIN' ? 'bg-[#d4af37] text-[#0f172a] shadow-lg' : 'text-slate-400 hover:text-white'}`}
+        <div className="px-8">
+          <div
+            className="grid grid-cols-2 p-1 rounded-2xl"
+            style={{ background: "#f1f5f9", border: `1px solid ${palette.border}` }}
           >
-            الإدارة والموظفين
-          </button>
-          <button 
-            onClick={() => { setLoginMode('CLIENT'); setError(''); }}
-            className={`flex-1 py-3 rounded-xl font-bold text-sm transition-all ${loginMode === 'CLIENT' ? 'bg-[#d4af37] text-[#0f172a] shadow-lg' : 'text-slate-400 hover:text-white'}`}
-          >
-            بوابة الموكلين
-          </button>
+            <button
+              onClick={() => {
+                setLoginMode("ADMIN");
+                setError("");
+              }}
+              className="py-3 rounded-xl font-black text-sm transition-all"
+              style={{
+                background: loginMode === "ADMIN" ? palette.card : "transparent",
+                color: loginMode === "ADMIN" ? palette.text : palette.muted,
+                boxShadow: loginMode === "ADMIN" ? "0 10px 20px rgba(2,6,23,0.08)" : "none",
+              }}
+            >
+              الإدارة
+            </button>
+            <button
+              onClick={() => {
+                setLoginMode("CLIENT");
+                setError("");
+              }}
+              className="py-3 rounded-xl font-black text-sm transition-all"
+              style={{
+                background: loginMode === "CLIENT" ? palette.card : "transparent",
+                color: loginMode === "CLIENT" ? palette.text : palette.muted,
+                boxShadow: loginMode === "CLIENT" ? "0 10px 20px rgba(2,6,23,0.08)" : "none",
+              }}
+            >
+              بوابة الموكلين
+            </button>
+          </div>
         </div>
 
+        {/* Error */}
         {error && (
-          <div className="bg-red-500/10 border border-red-500/20 text-red-200 text-xs font-bold p-4 rounded-xl mb-6 text-center">
-            {error}
+          <div className="px-8 pt-5">
+            <div
+              className="text-xs font-black p-4 rounded-xl text-center"
+              style={{
+                background: "rgba(239,68,68,0.10)",
+                color: "#b91c1c",
+                border: "1px solid rgba(239,68,68,0.25)",
+              }}
+            >
+              {error}
+            </div>
           </div>
         )}
 
-        {loginMode === 'ADMIN' ? (
-          <form onSubmit={handleAdminLogin} className="space-y-6">
-            <div>
-              <label className="block text-xs font-bold text-[#d4af37] mb-2 uppercase tracking-wider">الرقم السري</label>
-              <input 
-                type="password" 
-                className="w-full bg-white/10 border border-white/10 rounded-2xl px-5 py-4 text-white placeholder-slate-500 outline-none focus:border-[#d4af37] transition-all text-center tracking-widest text-lg"
-                placeholder="••••••"
-                value={adminPass}
-                onChange={e => setAdminPass(e.target.value)}
-              />
-            </div>
-            <button 
-              type="submit"
-              className="w-full py-4 bg-gradient-to-r from-[#d4af37] to-[#b8960c] text-[#0f172a] rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl shadow-amber-600/20 hover:scale-[1.02] transition-all"
-            >
-              دخول النظام
-            </button>
-          </form>
-        ) : (
-          <form onSubmit={handleClientLogin} className="space-y-6">
-            <div>
-              <label className="block text-xs font-bold text-[#d4af37] mb-2 uppercase tracking-wider">رقم الهوية / الجواز</label>
-              <input 
-                type="text" 
-                className="w-full bg-white/10 border border-white/10 rounded-2xl px-5 py-4 text-white placeholder-slate-500 outline-none focus:border-[#d4af37] transition-all font-mono"
-                placeholder="784-xxxx-xxxxxxx-x"
-                value={clientIdInput}
-                onChange={e => setClientIdInput(e.target.value)}
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-bold text-[#d4af37] mb-2 uppercase tracking-wider">رقم الهاتف (كلمة المرور)</label>
-              <input 
-                type="text" 
-                className="w-full bg-white/10 border border-white/10 rounded-2xl px-5 py-4 text-white placeholder-slate-500 outline-none focus:border-[#d4af37] transition-all font-mono"
-                placeholder="05xxxxxxxx"
-                value={clientPhoneInput}
-                onChange={e => setClientPhoneInput(e.target.value)}
-              />
-            </div>
-            <button 
-              type="submit"
-              className="w-full py-4 bg-gradient-to-r from-[#d4af37] to-[#b8960c] text-[#0f172a] rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl shadow-amber-600/20 hover:scale-[1.02] transition-all"
-            >
-              دخول الموكل
-            </button>
-          </form>
-        )}
+        {/* Forms */}
+        <div className="p-8 pt-6">
+          {loginMode === "ADMIN" ? (
+            <form onSubmit={handleAdminLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-black mb-2" style={{ color: palette.muted }}>
+                  اسم المستخدم
+                </label>
+                <input
+                  type="text"
+                  className="w-full rounded-2xl px-4 py-3 outline-none"
+                  style={{
+                    border: `1px solid ${palette.border}`,
+                    background: "#fff",
+                    color: palette.text,
+                  }}
+                  placeholder="مثال: ahmed"
+                  value={adminUsername}
+                  onChange={(e) => setAdminUsername(e.target.value)}
+                  autoComplete="username"
+                />
+              </div>
 
-        <div className="mt-12 text-center border-t border-white/5 pt-6">
-          <p className="text-slate-500 text-[10px] font-black uppercase tracking-widest">&copy; 2025 LegalMaster UAE</p>
+              <div>
+                <label className="block text-xs font-black mb-2" style={{ color: palette.muted }}>
+                  كلمة المرور
+                </label>
+                <input
+                  type="password"
+                  className="w-full rounded-2xl px-4 py-3 outline-none"
+                  style={{
+                    border: `1px solid ${palette.border}`,
+                    background: "#fff",
+                    color: palette.text,
+                  }}
+                  placeholder="••••••••"
+                  value={adminPass}
+                  onChange={(e) => setAdminPass(e.target.value)}
+                  autoComplete="current-password"
+                />
+              </div>
+
+              <button
+                type="submit"
+                className="w-full rounded-2xl py-3 font-black text-sm"
+                style={{
+                  background: `linear-gradient(135deg, ${palette.primary}, ${palette.primary2})`,
+                  color: "white",
+                  boxShadow: "0 18px 32px rgba(37,99,235,0.20)",
+                }}
+              >
+                دخول الإدارة
+              </button>
+
+              <div className="text-[11px] font-bold text-center" style={{ color: palette.muted }}>
+                تلميح: حسابات الإدارة الحالية: <span className="font-black">ahmed</span>,{" "}
+                <span className="font-black">samar</span>, <span className="font-black">admin</span>
+              </div>
+            </form>
+          ) : (
+            <form onSubmit={handleClientLogin} className="space-y-4">
+              <div>
+                <label className="block text-xs font-black mb-2" style={{ color: palette.muted }}>
+                  رقم الهوية الإماراتية
+                </label>
+                <input
+                  type="text"
+                  className="w-full rounded-2xl px-4 py-3 outline-none font-mono"
+                  style={{
+                    border: `1px solid ${palette.border}`,
+                    background: "#fff",
+                    color: palette.text,
+                  }}
+                  placeholder="784xxxxxxxxxxxxxxx"
+                  value={clientIdInput}
+                  onChange={(e) => setClientIdInput(e.target.value)}
+                  inputMode="numeric"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-black mb-2" style={{ color: palette.muted }}>
+                  كلمة المرور
+                </label>
+                <input
+                  type="password"
+                  className="w-full rounded-2xl px-4 py-3 outline-none"
+                  style={{
+                    border: `1px solid ${palette.border}`,
+                    background: "#fff",
+                    color: palette.text,
+                  }}
+                  placeholder="••••••"
+                  value={clientPassInput}
+                  onChange={(e) => setClientPassInput(e.target.value)}
+                />
+                <div className="mt-2 text-[11px] font-bold" style={{ color: palette.muted }}>
+                  افتراضيًا: كلمة المرور = <span className="font-black">{DEFAULT_CLIENT_PASSWORD}</span> (سيتم تخصيصها لكل موكل لاحقًا).
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full rounded-2xl py-3 font-black text-sm"
+                style={{
+                  background: `linear-gradient(135deg, ${palette.accent}, #86efac)`,
+                  color: "#064e3b",
+                  boxShadow: "0 18px 32px rgba(34,197,94,0.18)",
+                }}
+              >
+                دخول الموكل
+              </button>
+            </form>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-8 pb-7 text-center">
+          <div style={{ height: 1, background: palette.border }} className="mb-5" />
+          <p className="text-[10px] font-black" style={{ color: palette.muted }}>
+            © {new Date().getFullYear()} Helm Smart — Legal Office Manager
+          </p>
         </div>
       </div>
     </div>
