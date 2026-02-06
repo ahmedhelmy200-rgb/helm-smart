@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+﻿import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import AIConsultant from './components/AIConsultant';
@@ -55,13 +55,13 @@ const INITIAL_CONFIG: SystemConfig = {
   ],
   smartTemplates: {
     whatsappInvoice:
-      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}،\nنرفق لكم تفاصيل الفاتورة رقم: {invoiceNumber}\nالقيمة: {amount} د.إ\nالبيان: {description}\n\nيرجى التكرم بالسداد، وشكرًا لثقتكم.\n{officeName}',
+      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}\nنرفق لكم تفاصيل الفاتورة رقم: {invoiceNumber}\nالقيمة: {amount} د.إ\nالبيان: {description}\n\nيرجى التكرم بالسداد وشكرا لثقتكم.\n{officeName}',
     whatsappPaymentReminder:
-      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}،\nنود تذكيركم بوجود مستحقات مالية بقيمة {due} د.إ.\nيرجى التواصل لتسوية المستحقات.\n\nمع التحية،\n{officeName}',
+      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}\nنود تذكيركم بوجود مستحقات مالية بقيمة {due} د.إ.\nيرجى التواصل لتسوية المستحقات.\n\nمع التحية\n{officeName}',
     whatsappSessionReminder:
-      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}،\nتذكير بموعد الجلسة القادمة.\nرقم القضية: {caseNumber}\nالمحكمة: {court}\nالتاريخ: {date}\n\nلأي استفسار، يرجى التواصل.\n{officeName}',
+      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}\nتذكير بموعد الجلسة القادمة.\nرقم القضية: {caseNumber}\nالمحكمة: {court}\nالتاريخ: {date}\n\nلأي استفسار يرجى التواصل.\n{officeName}',
     whatsappGeneral:
-      '*{officeName}*\n\nمرحبًا {clientName}،\nنود الاطمئنان عليكم. هل لديكم أي استفسارات قانونية؟\n\n{officeName}',
+      '*{officeName}*\n\nمرحبا {clientName}\nنود الاطمئنان عليكم. هل لديكم أي استفسارات قانونية\n\n{officeName}',
     invoiceLineNote:
       'دفعة أتعاب عن القضية رقم: {caseNumber}',
     invoiceFooter:
@@ -97,10 +97,10 @@ const App: React.FC = () => {
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [loggedInClient, setLoggedInClient] = useState<Client | null>(null);
-  
+
   // Admin Profile State
   const [adminProfile, setAdminProfile] = useState<{name: string, title: string} | null>(null);
-  
+
   // Data State
   const [cases, setCases] = useState<LegalCase[]>(() => {
     const saved = localStorage.getItem('legalmaster_cases');
@@ -301,21 +301,115 @@ const App: React.FC = () => {
   const handleLogout = () => {
     if(adminProfile) logAction(adminProfile.name, 'Admin', 'Logout');
     else if(loggedInClient) logAction(loggedInClient.name, 'Client', 'Logout');
-    
+
     setUserRole(null);
     setLoggedInClient(null);
     setAdminProfile(null);
     setActiveTab('dashboard');
   };
 
-  // ======== ✅ CLOUD FUNCTIONS MOVED ABOVE CONDITIONAL RETURN (FIX HOOKS ORDER) ========
+  // Action Handlers
+  const handleAddCase = (newCase: LegalCase) => setCases([newCase, ...cases]);
+  const handleUpdateCase = (updatedCase: LegalCase) => setCases(cases.map(c => c.id === updatedCase.id ? updatedCase : c));
+  const handleDeleteCase = (caseId: string) => {
+      setCases(cases.filter(c => c.id !== caseId));
+      if(adminProfile) logAction(adminProfile.name, 'Admin', `Deleted Case ID: ${caseId}`);
+  };
+
+  const handleAddClient = (newClient: Client) => setClients([newClient, ...clients]);
+  const handleUpdateClient = (updatedClient: Client) => setClients(clients.map(c => c.id === updatedClient.id ? updatedClient : c));
+
+  const handleDeleteClient = (clientId: string) => {
+    if (confirm('هل أنت متأكد من حذف هذا الموكل سيتم حذف جميع القضايا والفواتير المرتبطة به.')) {
+      setClients(clients.filter(c => c.id !== clientId));
+      setCases(cases.filter(c => c.clientId !== clientId));
+      setInvoices(invoices.filter(i => i.clientId !== clientId));
+      if(adminProfile) logAction(adminProfile.name, 'Admin', `Deleted Client ID: ${clientId}`);
+    }
+  };
+
+  const handleAddInvoice = (newInvoice: Invoice) => setInvoices([newInvoice, ...invoices]);
+  const normalizeExpenseKey = (e: Expense) => {
+    const d = (e.date || '').slice(0, 10);
+    const amt = Number(e.amount || 0).toFixed(2);
+    const cat = (e.category || '').trim().toLowerCase();
+    const desc = (e.description || '').trim().toLowerCase();
+    return `${d}__${amt}__${cat}__${desc}`;
+  };
+
+  const dedupeExpenses = (arr: Expense[]) => {
+    const seen = new Set<string>();
+    const out: Expense[] = [];
+    for (const e of arr) {
+      const key = normalizeExpenseKey(e);
+      if (!seen.has(key)) {
+        seen.add(key);
+        out.push(e);
+      }
+    }
+    return out;
+  };
+
+  const handleAddExpense = (newExp: Expense) => setExpenses(prev => dedupeExpenses([newExp, ...prev]));
+  const handleUpdateExpense = (updated: Expense) => setExpenses(prev => dedupeExpenses(prev.map(e => e.id === updated.id ? updated : e)));
+  const handleDeleteExpense = (expId: string) => setExpenses(prev => prev.filter(e => e.id !== expId));
+  const handleUpdateInvoice = (updatedInvoice: Invoice) => setInvoices(invoices.map(inv => inv.id === updatedInvoice.id ? updatedInvoice : inv));
+
+  const handleBackup = () => {
+    const backupData = {
+      backupVersion: 1,
+      appName: 'HelmSmart',
+      timestamp: new Date().toISOString(),
+      config: systemConfig,
+      clients,
+      cases,
+      invoices,
+      expenses,
+      logs: systemLogs
+    };
+
+    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `HelmSmart_Backup_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    if(adminProfile) logAction(adminProfile.name, 'Admin', 'System Backup Downloaded');
+  };
+
+  const handleRestore = (data: any) => {
+    // Restore is intentionally tolerant: it accepts both the new backup format
+    // and older backups that might not contain all fields.
+    try {
+      const restoredConfig = data?.config ? withSafeConfigDefaults(data.config) : systemConfig;
+      const restoredClients = Array.isArray(data?.clients) ? data.clients : clients;
+      const restoredCases = Array.isArray(data?.cases) ? data.cases : cases;
+      const restoredInvoices = Array.isArray(data?.invoices) ? data.invoices : invoices;
+      const restoredExpenses = Array.isArray(data?.expenses) ? data.expenses : expenses;
+      const restoredLogs = Array.isArray(data?.logs) ? data.logs : systemLogs;
+
+      setSystemConfig(restoredConfig);
+      setClients(restoredClients);
+      setCases(restoredCases);
+      setInvoices(restoredInvoices);
+      setExpenses(restoredExpenses);
+      setSystemLogs(restoredLogs);
+
+      logAction(adminProfile?.name || 'Admin', 'Admin', 'System Backup Restored');
+      alert('✅ تم استعادة النسخة الاحتياطية بنجاح.');
+    } catch (e) {
+      alert('تعذر استعادة النسخة. تأكد من صحة ملف JSON.');
+    }
+  };
 
   // Cloud Sync Actions
   const cloudPull = async () => {
     if (!cloudEnabled) return;
     if (!isSupabaseEnabled) {
       setCloudStatus({ lastError: 'Supabase not configured' });
-      alert('Supabase غير مُعد. ضع VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY أولاً.');
+      alert('Supabase غير معد. ضع VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY أولا.');
       return;
     }
 
@@ -352,7 +446,7 @@ const App: React.FC = () => {
     if (!cloudEnabled) return;
     if (!isSupabaseEnabled) {
       setCloudStatus({ lastError: 'Supabase not configured' });
-      alert('Supabase غير مُعد. ضع VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY أولاً.');
+      alert('Supabase غير معد. ضع VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY أولا.');
       return;
     }
 
@@ -398,112 +492,9 @@ const App: React.FC = () => {
     return () => window.clearTimeout(t);
   }, [cloudEnabled, isSupabaseEnabled, clients, cases, invoices, expenses, systemConfig, systemLogs]);
 
-  // ======== ✅ IMPORTANT: Conditional return AFTER ALL HOOKS ========
-
-  if (!userRole) {
-    return <Login onLogin={handleLogin} clients={clients} config={systemConfig} />;
-  }
-
-  // Action Handlers
-  const handleAddCase = (newCase: LegalCase) => setCases([newCase, ...cases]);
-  const handleUpdateCase = (updatedCase: LegalCase) => setCases(cases.map(c => c.id === updatedCase.id ? updatedCase : c));
-  const handleDeleteCase = (caseId: string) => {
-      setCases(cases.filter(c => c.id !== caseId));
-      if(adminProfile) logAction(adminProfile.name, 'Admin', `Deleted Case ID: ${caseId}`);
-  };
-
-  const handleAddClient = (newClient: Client) => setClients([newClient, ...clients]);
-  const handleUpdateClient = (updatedClient: Client) => setClients(clients.map(c => c.id === updatedClient.id ? updatedClient : c));
-  
-  const handleDeleteClient = (clientId: string) => {
-    if (confirm('هل أنت متأكد من حذف هذا الموكل؟ سيتم حذف جميع القضايا والفواتير المرتبطة به.')) {
-      setClients(clients.filter(c => c.id !== clientId));
-      setCases(cases.filter(c => c.clientId !== clientId));
-      setInvoices(invoices.filter(i => i.clientId !== clientId));
-      if(adminProfile) logAction(adminProfile.name, 'Admin', `Deleted Client ID: ${clientId}`);
-    }
-  };
-
-  const handleAddInvoice = (newInvoice: Invoice) => setInvoices([newInvoice, ...invoices]);
-
-  const normalizeExpenseKey = (e: Expense) => {
-    const d = (e.date || '').slice(0, 10);
-    const amt = Number(e.amount || 0).toFixed(2);
-    const cat = (e.category || '').trim().toLowerCase();
-    const desc = (e.description || '').trim().toLowerCase();
-    return `${d}__${amt}__${cat}__${desc}`;
-  };
-
-  const dedupeExpenses = (arr: Expense[]) => {
-    const seen = new Set<string>();
-    const out: Expense[] = [];
-    for (const e of arr) {
-      const key = normalizeExpenseKey(e);
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push(e);
-      }
-    }
-    return out;
-  };
-
-  const handleAddExpense = (newExp: Expense) => setExpenses(prev => dedupeExpenses([newExp, ...prev]));
-  const handleUpdateExpense = (updated: Expense) => setExpenses(prev => dedupeExpenses(prev.map(e => e.id === updated.id ? updated : e)));
-  const handleDeleteExpense = (expId: string) => setExpenses(prev => prev.filter(e => e.id !== expId));
-  const handleUpdateInvoice = (updatedInvoice: Invoice) => setInvoices(invoices.map(inv => inv.id === updatedInvoice.id ? updatedInvoice : inv));
-
-  const handleBackup = () => {
-    const backupData = {
-      backupVersion: 1,
-      appName: 'HelmSmart',
-      timestamp: new Date().toISOString(),
-      config: systemConfig,
-      clients,
-      cases,
-      invoices,
-      expenses,
-      logs: systemLogs
-    };
-    
-    const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `HelmSmart_Backup_${new Date().toLocaleDateString('en-GB').replace(/\//g, '-')}.json`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    if(adminProfile) logAction(adminProfile.name, 'Admin', 'System Backup Downloaded');
-  };
-
-  const handleRestore = (data: any) => {
-    // Restore is intentionally tolerant: it accepts both the new backup format
-    // and older backups that might not contain all fields.
-    try {
-      const restoredConfig = data?.config ? withSafeConfigDefaults(data.config) : systemConfig;
-      const restoredClients = Array.isArray(data?.clients) ? data.clients : clients;
-      const restoredCases = Array.isArray(data?.cases) ? data.cases : cases;
-      const restoredInvoices = Array.isArray(data?.invoices) ? data.invoices : invoices;
-      const restoredExpenses = Array.isArray(data?.expenses) ? data.expenses : expenses;
-      const restoredLogs = Array.isArray(data?.logs) ? data.logs : systemLogs;
-
-      setSystemConfig(restoredConfig);
-      setClients(restoredClients);
-      setCases(restoredCases);
-      setInvoices(restoredInvoices);
-      setExpenses(restoredExpenses);
-      setSystemLogs(restoredLogs);
-
-      logAction(adminProfile?.name || 'Admin', 'Admin', 'System Backup Restored');
-      alert('✅ تم استعادة النسخة الاحتياطية بنجاح.');
-    } catch (e) {
-      alert('تعذر استعادة النسخة. تأكد من صحة ملف JSON.');
-    }
-  };
-
   const renderContent = () => {
     switch (activeTab) {
-      case 'dashboard': 
+      case 'dashboard':
         if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
         return <Dashboard cases={cases} clients={clients} invoices={invoices} expenses={expenses} userRole={userRole} config={systemConfig} />;
       case 'search':
@@ -513,24 +504,24 @@ const App: React.FC = () => {
           setActiveTab(tab);
         }} />;
 
-      case 'ai-consultant': 
+      case 'ai-consultant':
         return <AIConsultant />;
       case 'smart-analysis':
         return <SmartDocumentAnalyzer />;
-      case 'accounting': 
+      case 'accounting':
         if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
-        return <Accounting 
-          invoices={invoices} 
-          cases={cases} 
+        return <Accounting
+          invoices={invoices}
+          cases={cases}
           expenses={expenses}
-          onAddInvoice={handleAddInvoice} 
-          onUpdateInvoice={handleUpdateInvoice} 
+          onAddInvoice={handleAddInvoice}
+          onUpdateInvoice={handleUpdateInvoice}
           onAddExpense={handleAddExpense}
           onUpdateExpense={handleUpdateExpense}
           onDeleteExpense={handleDeleteExpense}
           clients={clients}
           onUpdateClient={handleUpdateClient}
-          config={systemConfig} 
+          config={systemConfig}
           onUpdateConfig={setSystemConfig}
         />;
       case 'links':
@@ -539,13 +530,13 @@ const App: React.FC = () => {
         if (userRole !== UserRole.ADMIN) {
            return <div className="p-20 text-center font-bold text-red-500">غير مصرح بالدخول للإعدادات</div>;
         }
-        return <Settings 
-          config={systemConfig} 
+        return <Settings
+          config={systemConfig}
           onUpdateConfig={(newConf) => {
              setSystemConfig(newConf);
              logAction(adminProfile?.name || 'Admin', 'Admin', 'Updated System Settings');
-          }} 
-          onBackup={handleBackup} 
+          }}
+          onBackup={handleBackup}
           onRestore={handleRestore}
           logs={systemLogs}
           supabaseEnabled={isSupabaseEnabled}
@@ -555,19 +546,19 @@ const App: React.FC = () => {
           onCloudPull={() => { void cloudPull(); }}
           onCloudPush={() => { void cloudPush(); }}
         />;
-      case 'cases': 
+      case 'cases':
         if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
-        return <CaseManagement 
-            cases={cases} 
-            clients={clients} 
-            onAddCase={handleAddCase} 
-            onUpdateCase={handleUpdateCase} 
+        return <CaseManagement
+            cases={cases}
+            clients={clients}
+            onAddCase={handleAddCase}
+            onUpdateCase={handleUpdateCase}
             onDeleteCase={handleDeleteCase} // Pass delete handler
-            onAddClient={handleAddClient} 
+            onAddClient={handleAddClient}
         />;
-      case 'clients': 
+      case 'clients':
         if (userRole === UserRole.CLIENT && loggedInClient) {
-           return <ClientManagement 
+           return <ClientManagement
              clients={clients}
              cases={cases}
              invoices={invoices}
@@ -575,17 +566,17 @@ const App: React.FC = () => {
              onAddClient={handleAddClient}
              onAddCase={handleAddCase}
              onUpdateClient={handleUpdateClient}
-             onDeleteClient={() => {}} 
-             onAddInvoice={() => {}} 
-             viewOnlyClientId={loggedInClient.id} 
+             onDeleteClient={() => {}}
+             onAddInvoice={() => {}}
+             viewOnlyClientId={loggedInClient.id}
            />;
         }
-        return <ClientManagement 
-          clients={clients} 
-          cases={cases} 
-          invoices={invoices} 
+        return <ClientManagement
+          clients={clients}
+          cases={cases}
+          invoices={invoices}
           config={systemConfig}
-          onAddClient={handleAddClient} 
+          onAddClient={handleAddClient}
           onAddCase={handleAddCase}
           onUpdateClient={handleUpdateClient}
           onDeleteClient={handleDeleteClient}
@@ -595,20 +586,22 @@ const App: React.FC = () => {
     }
   };
 
-  return (
-    <div 
+  return !userRole ? (
+    <Login onLogin={handleLogin} clients={clients} config={systemConfig} />
+  ) : (
+    <div
       className="min-h-screen flex flex-col transition-all duration-500"
-      style={{ 
-        fontFamily: systemConfig.fontFamily || 'Cairo', 
-        backgroundColor: systemConfig.backgroundColor || '#f8fafc' 
+      style={{
+        fontFamily: systemConfig.fontFamily || 'Cairo',
+        backgroundColor: systemConfig.backgroundColor || '#f8fafc'
       }}
     >
-      
+
       {/* Top Navigation Bar for Admin */}
       {userRole !== UserRole.CLIENT && (
         <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} config={systemConfig} onLogout={handleLogout} />
       )}
-      
+
       {/* Client Portal Header */}
       {userRole === UserRole.CLIENT && (
         <header className="bg-[#0f172a] text-white p-6 shadow-xl border-b-4 border-[#d4af37]">
@@ -617,19 +610,19 @@ const App: React.FC = () => {
                  <h1 className="text-xl font-black text-[#d4af37]">بوابة الموكلين</h1>
                  <p className="text-xs text-slate-400">مكتب المستشار أحمد حلمي</p>
               </div>
-              <button onClick={() => { if(confirm('تسجيل الخروج؟')) handleLogout(); }} className="text-sm bg-white/10 px-4 py-2 rounded-xl hover:bg-white/20">خروج</button>
+              <button onClick={() => { if(confirm('تسجيل الخروج')) handleLogout(); }} className="text-sm bg-white/10 px-4 py-2 rounded-xl hover:bg-white/20">خروج</button>
            </div>
         </header>
       )}
-      
-      {/* Main Content Area - Adjusted top padding to accommodate fixed header */}
-      <main 
+
+      {/* Main Content Area */}
+      <main
         className={`flex-1 w-full max-w-screen-2xl mx-auto overflow-x-hidden relative pb-10 transition-all duration-300 ${userRole !== UserRole.CLIENT ? 'pt-28' : ''}`}
       >
         {renderContent()}
       </main>
-      
-      {/* Admin Footer Info (Optional, kept minimal) */}
+
+      {/* Admin Footer Info */}
       {userRole === UserRole.ADMIN && (
         <div className="fixed bottom-4 left-4 z-40 bg-white/80 backdrop-blur-md px-4 py-2 rounded-full shadow-sm border border-slate-100 text-[10px] font-bold text-slate-400 print:hidden">
            Logged in as: {adminProfile?.name} ({adminProfile?.title})
