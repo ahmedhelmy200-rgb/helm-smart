@@ -1,6 +1,20 @@
-﻿@tailwind base;
+@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-html, body { height: 100%; }
-body { margin: 0; }
+/* كود مخصص لمنع تداخل الأزرار في الموبايل */
+@layer components {
+  .flex-container {
+    @apply flex flex-wrap justify-center gap-4 p-4;
+  }
+  
+  button {
+    @apply min-h-[48px] w-full sm:w-auto px-6 py-2 rounded-lg transition-all;
+  }
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  overflow-x: hidden; /* يمنع ظهور شريط التمرير العرضي الذي يسبب مشاكل الموبايل */
+}
