@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import AIConsultant from './components/AIConsultant';
@@ -10,6 +10,7 @@ import GlobalSearch from './components/GlobalSearch';
 import ImportantLinks from './components/ImportantLinks';
 import Settings from './components/Settings'; // New Component
 import Login from './components/Login';
+import { Analytics } from '@vercel/analytics/react';
 import { isSupabaseEnabled } from './services/supabase';
 import { kvGet, kvSet } from './services/cloudKv';
 import { LegalCase, CaseStatus, CourtType, Client, Invoice, Expense, UserRole, SystemConfig, SystemLog } from './types';
@@ -628,6 +629,7 @@ const App: React.FC = () => {
            Logged in as: {adminProfile?.name} ({adminProfile?.title})
         </div>
       )}
+      <Analytics />
     </div>
   );
 };
