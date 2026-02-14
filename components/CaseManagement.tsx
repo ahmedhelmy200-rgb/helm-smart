@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { LegalCase, CaseStatus, CourtType, CaseDocument, Client } from '../types';
 import { ICONS } from '../constants';
 
@@ -16,6 +16,10 @@ const CaseManagement: React.FC<CaseManagementProps> = ({ cases, clients, onAddCa
   const [showAddModal, setShowAddModal] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [selectedCase, setSelectedCase] = useState<LegalCase | null>(null);
+
+  const attachInputRef = useRef<HTMLInputElement | null>(null);
+  const [showDocsList, setShowDocsList] = useState(false);
+
   
   // Filters
   const [filterCourt, setFilterCourt] = useState<string>('all');
@@ -36,6 +40,12 @@ const CaseManagement: React.FC<CaseManagementProps> = ({ cases, clients, onAddCa
       // ignore
     }
   }, []);
+
+  // Reset documents view when opening a different case
+  useEffect(() => {
+    setShowDocsList(false);
+  }, [selectedCase?.id]);
+
 
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   
@@ -172,6 +182,48 @@ const CaseManagement: React.FC<CaseManagementProps> = ({ cases, clients, onAddCa
       doc.id === docId ? { ...doc, reviewReminder: date } : doc
     );
     const updatedCase = { ...selectedCase, documents: updatedDocuments };
+
+  const readFileAsDataUrl = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('File read error'));
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const attachDocuments = async (files: FileList | null) => {
+    if (!selectedCase || !files || files.length === 0) return;
+
+    try {
+      const now = new Date();
+      const uploadDate = now.toLocaleDateString('en-GB');
+
+      const docs = await Promise.all(Array.from(files).map(async (f) => {
+        const content = await readFileAsDataUrl(f);
+        const name = f.name || 'Document';
+        const ext = (name.split('.').pop() || '').toLowerCase();
+        return {
+          id: Math.random().toString(36).slice(2, 10),
+          name,
+          type: ext || 'file',
+          mimeType: f.type || undefined,
+          uploadDate,
+          content
+        };
+      }));
+
+      const updatedCase = { ...selectedCase, documents: [...(selectedCase.documents || []), ...docs] };
+      setSelectedCase(updatedCase);
+      onUpdateCase(updatedCase);
+      // Clear the input so the same file can be selected again later
+      if (attachInputRef.current) attachInputRef.current.value = '';
+    } catch (e) {
+      console.error(e);
+      alert('تعذر إرفاق المستندات. حاول مرة أخرى.');
+    }
+  };
+
     setSelectedCase(updatedCase);
     onUpdateCase(updatedCase);
     setReminderEditDocId(null); 
@@ -363,26 +415,79 @@ const CaseManagement: React.FC<CaseManagementProps> = ({ cases, clients, onAddCa
                 </section>
 
                 <section>
-                   <h4 className="text-xs font-bold text-[#d4af37] uppercase tracking-wider mb-4">المستندات</h4>
-                   <div className="space-y-2">
-                      {selectedCase.documents.map(doc => (
-                         <div key={doc.id} className="flex items-center justify-between p-3 border border-slate-100 rounded-lg">
-                            <div className="flex items-center gap-3">
-                               <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
-                               <div><p className="text-sm font-bold">{doc.name}</p><p className="text-[10px] text-slate-400">{doc.uploadDate}</p></div>
-                            </div>
-                            {/* Reminder Logic */}
-                            <div className="print:hidden">
-                               {reminderEditDocId === doc.id ? (
-                                 <input type="date" className="text-xs border rounded p-1" value={doc.reviewReminder || ''} onChange={(e) => updateDocReminder(doc.id, e.target.value)} onBlur={() => setReminderEditDocId(null)} autoFocus />
-                               ) : (
-                                 <button onClick={() => setReminderEditDocId(doc.id)} className="p-2 hover:bg-slate-100 rounded-full text-slate-400" title="تذكير"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg></button>
-                               )}
-                            </div>
-                         </div>
-                      ))}
+                   <div className="flex items-center justify-between mb-4">
+                     <h4 className="text-xs font-bold text-[#d4af37] uppercase tracking-wider">المستندات</h4>
+                     <div className="flex items-center gap-2 print:hidden">
+                       <span className="text-[11px] font-bold bg-slate-100 px-3 py-1 rounded-full border border-slate-200">
+                         المرفقات: {selectedCase.documents?.length || 0}
+                       </span>
+                       <button
+                         type="button"
+                         onClick={() => attachInputRef.current?.click()}
+                         className="text-[11px] font-bold bg-[#d4af37] text-[#1a1a2e] px-3 py-1.5 rounded-full hover:opacity-90"
+                       >
+                         إرفاق
+                       </button>
+                       <button
+                         type="button"
+                         onClick={() => setShowDocsList(v => !v)}
+                         className="text-[11px] font-bold bg-slate-200 text-slate-700 px-3 py-1.5 rounded-full hover:bg-slate-300"
+                       >
+                         {showDocsList ? 'إخفاء' : 'عرض'}
+                       </button>
+                     </div>
                    </div>
-                </section>
+
+                   {/* Hidden multi-file input */}
+                   <input
+                     ref={attachInputRef}
+                     type="file"
+                     multiple
+                     className="hidden print:hidden"
+                     onChange={(e) => attachDocuments(e.target.files)}
+                   />
+
+                   {/* Compact summary on screen (default) */}
+                   <div className="print:hidden">
+                     {(selectedCase.documents?.length || 0) === 0 ? (
+                       <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-600">
+                         لا يوجد مستندات مرفقة بعد.
+                       </div>
+                     ) : !showDocsList ? (
+                       <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between">
+                         <div className="text-sm font-bold text-slate-700">
+                           تم إرفاق {selectedCase.documents.length} مستند{selectedCase.documents.length > 1 ? 'ات' : ''}.
+                         </div>
+                         <div className="text-[11px] text-slate-500">
+                           آخر إرفاق: {selectedCase.documents[selectedCase.documents.length - 1]?.uploadDate || '-'}
+                         </div>
+                       </div>
+                     ) : null}
+                   </div>
+
+                   {/* Full list when expanded or on print */}
+                   <div className={`${showDocsList ? 'space-y-2' : 'hidden'} print:block print:space-y-2`}>
+                     {(selectedCase.documents || []).map(doc => (
+                        <div key={doc.id} className="flex items-center justify-between p-3 border border-slate-100 rounded-lg">
+                           <div className="flex items-center gap-3">
+                              <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                              <div>
+                                <p className="text-sm font-bold">{doc.name}</p>
+                                <p className="text-[10px] text-slate-400">{doc.uploadDate}</p>
+                              </div>
+                           </div>
+                           {/* Reminder Logic */}
+                           <div className="print:hidden">
+                              {reminderEditDocId === doc.id ? (
+                                <input type="date" className="text-xs border rounded p-1" value={doc.reviewReminder || ''} onChange={(e) => updateDocReminder(doc.id, e.target.value)} onBlur={() => setReminderEditDocId(null)} autoFocus />
+                              ) : (
+                                <button onClick={() => setReminderEditDocId(doc.id)} className="p-2 hover:bg-slate-100 rounded-full text-slate-400" title="تذكير"><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg></button>
+                              )}
+                           </div>
+                        </div>
+                     ))}
+                   </div>
+                 </section>
              </div>
           </div>
         </div>

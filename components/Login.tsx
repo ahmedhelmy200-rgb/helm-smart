@@ -1,4 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { Client, SystemConfig, UserRole } from "../types";
+import { isSupabaseEnabled } from "../services/supabase";
+import { fetchMyProfile, signInWithPassword } from "../services/auth";
 
 /**
  * HELM Smart — Premium Login Screen (Single-file replacement)
@@ -17,7 +20,13 @@ import React, { useEffect, useMemo, useState } from "react";
 
 type Mode = "admin" | "client";
 
-export default function Login() {
+type Props = {
+  onLogin: (role: UserRole, data?: any) => void;
+  clients: Client[];
+  config: SystemConfig;
+};
+
+export default function Login({ onLogin, clients, config }: Props) {
   const [mode, setMode] = useState<Mode>("admin");
 
   const [username, setUsername] = useState("");
@@ -35,7 +44,11 @@ export default function Login() {
     setInfo("");
   }, [mode]);
 
-  // 🔒 Replace this with your current login logic (ONE PLACE ONLY)
+  // 🔒 Login logic (single source of truth)
+  // Supports ENV override (recommended on Vercel) + safe local fallback.
+  const ADMIN_USER = (import.meta as any)?.env?.VITE_ADMIN_USER || "admin";
+  const ADMIN_PASS = (import.meta as any)?.env?.VITE_ADMIN_PASS || "admin123";
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError("");
@@ -53,13 +66,31 @@ export default function Login() {
 
     setLoading(true);
     try {
-      // ✅ هنا اربط منطقك الحالي (local / api / supabase table)
-      // مثال: window.location.href = "/";  // لا تفعل هذا هنا—ضع منطقك الحقيقي
+      // Professional mode: Supabase Auth (Email/Password) + Profile role
+      if (isSupabaseEnabled) {
+        await signInWithPassword(username.trim(), password);
+        const profile = await fetchMyProfile();
+        if (!profile) throw new Error("لم يتم العثور على ملف المستخدم (profiles). تأكد من تنفيذ SQL الخاص بالـ RLS.");
 
-      // PLACEHOLDER: simulate success
-      await new Promise((r) => setTimeout(r, 400));
+        setInfo("تم تسجيل الدخول بنجاح.");
+        onLogin(profile.role, {
+          name: profile.display_name || config?.officeName || "مستخدم النظام",
+          title:
+            profile.role === UserRole.ADMIN
+              ? "إدارة المكتب"
+              : profile.role === UserRole.ACCOUNTANT
+              ? "الحسابات"
+              : "المساعد",
+        });
+        return;
+      }
+
+      // Offline/local mode fallback (no Supabase)
+      const u = username.trim();
+      const p = password;
+      if (u !== String(ADMIN_USER) || p !== String(ADMIN_PASS)) throw new Error("بيانات الدخول غير صحيحة.");
       setInfo("تم تسجيل الدخول بنجاح.");
-      // TODO: call your existing success handler / navigation
+      onLogin(UserRole.ADMIN, { name: config?.officeName || "المدير العام", title: "إدارة المكتب" });
     } catch (err: any) {
       setError(err?.message || "تعذر تسجيل الدخول. تحقق من البيانات.");
     } finally {
