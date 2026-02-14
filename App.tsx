@@ -9,11 +9,14 @@ import Accounting from './components/Accounting';
 import GlobalSearch from './components/GlobalSearch';
 import ImportantLinks from './components/ImportantLinks';
 import Settings from './components/Settings'; // New Component
+import RemindersPage from './components/reminders/RemindersPage';
 import Login from './components/Login';
 import { Analytics } from '@vercel/analytics/react';
-import { isSupabaseEnabled } from './services/supabase';
+import { isSupabaseEnabled, supabase } from './services/supabase';
 import { kvGet, kvSet } from './services/cloudKv';
-import { LegalCase, CaseStatus, CourtType, Client, Invoice, Expense, UserRole, SystemConfig, SystemLog } from './types';
+import { fetchMyProfile, signOut as supabaseSignOut } from './services/auth';
+import { hasPerm } from './services/rbac';
+import { LegalCase, CaseStatus, CourtType, Client, Invoice, Expense, UserRole, SystemConfig, SystemLog, Reminder } from './types';
 
 // ... (Data Initialization constants remain same as previous file, omitted for brevity but assumed present)
 // Re-declaring constants for completeness in this file context:
@@ -102,6 +105,49 @@ const App: React.FC = () => {
   // Admin Profile State
   const [adminProfile, setAdminProfile] = useState<{ name: string, title: string } | null>(null);
 
+  // --- Supabase Auth bootstrap (professional roles: ADMIN / ASSISTANT / ACCOUNTANT) ---
+  useEffect(() => {
+    if (!isSupabaseEnabled || !supabase) return;
+
+    let mounted = true;
+
+    const sync = async () => {
+      try {
+        const profile = await fetchMyProfile();
+        if (!mounted) return;
+        if (profile) {
+          setUserRole(profile.role);
+          setAdminProfile({
+            name: profile.display_name || 'مستخدم النظام',
+            title:
+              profile.role === UserRole.ADMIN
+                ? 'إدارة المكتب'
+                : profile.role === UserRole.ACCOUNTANT
+                ? 'الحسابات'
+                : 'المساعد',
+          });
+        } else {
+          // session exists but profile is missing (RLS or onboarding not done) => force logout
+          setUserRole(null);
+          setAdminProfile(null);
+        }
+      } catch {
+        // Keep app usable in offline/local mode
+      }
+    };
+
+    sync();
+
+    const { data: sub } = supabase.auth.onAuthStateChange(() => {
+      sync();
+    });
+
+    return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
+    };
+  }, []);
+
   // Data State
   const [cases, setCases] = useState<LegalCase[]>(() => {
     const saved = localStorage.getItem('legalmaster_cases');
@@ -121,6 +167,11 @@ const App: React.FC = () => {
   const [expenses, setExpenses] = useState<Expense[]>(() => {
     const saved = localStorage.getItem('legalmaster_expenses');
     return saved ? JSON.parse(saved) : INITIAL_EXPENSES;
+  });
+
+  const [reminders, setReminders] = useState<Reminder[]>(() => {
+    const saved = localStorage.getItem('legalmaster_reminders');
+    return saved ? JSON.parse(saved) : [];
   });
 
   const [systemConfig, setSystemConfig] = useState<SystemConfig>(() => {
@@ -151,8 +202,49 @@ const App: React.FC = () => {
   useEffect(() => localStorage.setItem('legalmaster_clients', JSON.stringify(clients)), [clients]);
   useEffect(() => localStorage.setItem('legalmaster_invoices', JSON.stringify(invoices)), [invoices]);
   useEffect(() => localStorage.setItem('legalmaster_expenses', JSON.stringify(expenses)), [expenses]);
+  useEffect(() => localStorage.setItem('legalmaster_reminders', JSON.stringify(reminders)), [reminders]);
   useEffect(() => localStorage.setItem('legalmaster_config', JSON.stringify(systemConfig)), [systemConfig]);
   useEffect(() => localStorage.setItem('legalmaster_logs', JSON.stringify(systemLogs)), [systemLogs]);
+
+  // Reminder notification loop (runs while app is open)
+  useEffect(() => {
+    if (userRole !== UserRole.ADMIN) return;
+    // Ask permission lazily
+    try {
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => {});
+      }
+    } catch {
+      // ignore
+    }
+
+    const tick = () => {
+      const now = new Date();
+      let changed = false;
+      const next = reminders.map(r => {
+        if (r.done) return r;
+        const dtStr = `${r.dueDate}T${r.dueTime || '09:00'}:00`;
+        const due = new Date(dtStr);
+        if (Number.isNaN(due.getTime())) return r;
+        if (due <= now && !r.notifiedAt) {
+          changed = true;
+          try {
+            if ('Notification' in window && Notification.permission === 'granted') {
+              new Notification('HELM Smart — تذكير', { body: r.title });
+            }
+          } catch {
+            // ignore
+          }
+          return { ...r, notifiedAt: new Date().toISOString() };
+        }
+        return r;
+      });
+      if (changed) setReminders(next);
+    };
+
+    const id = window.setInterval(tick, 20000);
+    return () => window.clearInterval(id);
+  }, [userRole, reminders]);
 
   /**
    * Data integrity guardrail:
@@ -279,18 +371,63 @@ const App: React.FC = () => {
     setSystemLogs(prev => [...prev, newLog]);
   };
 
-  // LOGIN HANDLER
+  // Supabase session bootstrapping (Professional Roles)
+  useEffect(() => {
+    let unsub: any = null;
+    if (!isSupabaseEnabled || !supabase) return;
+
+    const bootstrap = async () => {
+      try {
+        const profile = await fetchMyProfile();
+        if (profile?.role) {
+          setUserRole(profile.role);
+          setLoggedInClient(null);
+          setAdminProfile({ name: profile.display_name || 'مستخدم', title: profile.role });
+        }
+      } catch {
+        // ignore: user may be logged out or profiles not ready yet
+      }
+    };
+    bootstrap();
+
+    unsub = supabase.auth.onAuthStateChange(async (_event, session) => {
+      if (!session?.user) {
+        setUserRole(null);
+        setLoggedInClient(null);
+        setAdminProfile(null);
+        return;
+      }
+      try {
+        const profile = await fetchMyProfile();
+        if (profile?.role) {
+          setUserRole(profile.role);
+          setLoggedInClient(null);
+          setAdminProfile({ name: profile.display_name || 'مستخدم', title: profile.role });
+        }
+      } catch {
+        // ignore
+      }
+    });
+
+    return () => {
+      try {
+        unsub?.data?.subscription?.unsubscribe?.();
+      } catch {}
+    };
+  }, []);
+
+  // LOGIN HANDLER (Local fallback when Supabase is disabled)
   const handleLogin = (role: UserRole, data?: any) => {
     setUserRole(role);
     if (role === UserRole.CLIENT) {
       setLoggedInClient(data);
       setAdminProfile(null);
       logAction(data.name, 'Client', 'Portal Login');
-    } else if (role === UserRole.ADMIN) {
+    } else {
       setLoggedInClient(null);
       if (data && data.name) {
         setAdminProfile({ name: data.name, title: data.title || 'المدير العام' });
-        logAction(data.name, data.title || 'Admin', 'System Login');
+        logAction(data.name, data.title || 'User', 'System Login');
       } else {
         setAdminProfile({ name: 'المدير العام', title: 'إدارة المكتب' });
         logAction('Unknown Admin', 'Admin', 'System Login');
@@ -299,9 +436,18 @@ const App: React.FC = () => {
   };
 
   // LOGOUT HANDLER
-  const handleLogout = () => {
+  const handleLogout = async () => {
     if (adminProfile) logAction(adminProfile.name, 'Admin', 'Logout');
     else if (loggedInClient) logAction(loggedInClient.name, 'Client', 'Logout');
+
+    if (isSupabaseEnabled) {
+      try { await supabaseSignOut(); } catch { /* ignore */ }
+    }
+
+    if (isSupabaseEnabled) {
+      // fire-and-forget
+      supabaseSignOut().catch(() => void 0);
+    }
 
     setUserRole(null);
     setLoggedInClient(null);
@@ -388,6 +534,7 @@ const App: React.FC = () => {
       const restoredCases = Array.isArray(data?.cases) ? data.cases : cases;
       const restoredInvoices = Array.isArray(data?.invoices) ? data.invoices : invoices;
       const restoredExpenses = Array.isArray(data?.expenses) ? data.expenses : expenses;
+      const restoredReminders = Array.isArray(data?.reminders) ? data.reminders : reminders;
       const restoredLogs = Array.isArray(data?.logs) ? data.logs : systemLogs;
 
       setSystemConfig(restoredConfig);
@@ -395,6 +542,7 @@ const App: React.FC = () => {
       setCases(restoredCases);
       setInvoices(restoredInvoices);
       setExpenses(restoredExpenses);
+      setReminders(restoredReminders);
       setSystemLogs(restoredLogs);
 
       logAction(adminProfile?.name || 'Admin', 'Admin', 'System Backup Restored');
@@ -416,11 +564,12 @@ const App: React.FC = () => {
     try {
       setCloudStatus(prev => ({ ...prev, lastError: undefined }));
 
-      const [rClients, rCases, rInvoices, rExpenses, rConfig, rLogs] = await Promise.all([
+      const [rClients, rCases, rInvoices, rExpenses, rReminders, rConfig, rLogs] = await Promise.all([
         kvGet('clients'),
         kvGet('cases'),
         kvGet('invoices'),
         kvGet('expenses'),
+        kvGet('reminders'),
         kvGet('config'),
         kvGet('logs')
       ]);
@@ -429,6 +578,7 @@ const App: React.FC = () => {
       if (rCases?.data) setCases(rCases.data as LegalCase[]);
       if (rInvoices?.data) setInvoices(rInvoices.data as Invoice[]);
       if (rExpenses?.data) setExpenses(rExpenses.data as Expense[]);
+      if (rReminders?.data) setReminders(rReminders.data as Reminder[]);
       if (rConfig?.data) setSystemConfig(withSafeConfigDefaults(rConfig.data as any));
       if (rLogs?.data) setSystemLogs(rLogs.data as SystemLog[]);
 
@@ -458,6 +608,7 @@ const App: React.FC = () => {
         kvSet('cases', cases),
         kvSet('invoices', invoices),
         kvSet('expenses', expenses),
+        kvSet('reminders', reminders),
         kvSet('config', systemConfig),
         kvSet('logs', systemLogs)
       ]);
@@ -490,13 +641,17 @@ const App: React.FC = () => {
     }, 2000);
 
     return () => window.clearTimeout(t);
-  }, [cloudEnabled, isSupabaseEnabled, clients, cases, invoices, expenses, systemConfig, systemLogs]);
+  }, [cloudEnabled, isSupabaseEnabled, clients, cases, invoices, expenses, reminders, systemConfig, systemLogs]);
 
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard':
         if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
         return <Dashboard cases={cases} clients={clients} invoices={invoices} expenses={expenses} userRole={userRole} config={systemConfig} />;
+      case 'reminders':
+        if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
+        return <RemindersPage reminders={reminders} setReminders={setReminders} cases={cases} clients={clients} />;
+
       case 'search':
         if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
         return <GlobalSearch clients={clients} cases={cases} invoices={invoices} expenses={expenses} onNavigate={(tab, query) => {
@@ -505,11 +660,13 @@ const App: React.FC = () => {
         }} />;
 
       case 'ai-consultant':
+        if (!hasPerm(userRole, 'view_ai')) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح</div>;
         return <AIConsultant />;
       case 'smart-analysis':
+        if (!hasPerm(userRole, 'view_ai')) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح</div>;
         return <SmartDocumentAnalyzer />;
       case 'accounting':
-        if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
+        if (!hasPerm(userRole, 'manage_accounting')) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح</div>;
         return <Accounting
           invoices={invoices}
           cases={cases}
@@ -527,9 +684,7 @@ const App: React.FC = () => {
       case 'links':
         return <ImportantLinks />;
       case 'settings':
-        if (userRole !== UserRole.ADMIN) {
-          return <div className="p-20 text-center font-bold text-red-500">غير مصرح بالدخول للإعدادات</div>;
-        }
+        if (!hasPerm(userRole, 'manage_settings')) return <div className="p-20 text-center font-bold text-red-500">غير مصرح بالدخول للإعدادات</div>;
         return <Settings
           config={systemConfig}
           onUpdateConfig={(newConf) => {
@@ -599,7 +754,7 @@ const App: React.FC = () => {
     >
       {/* Top Navigation Bar for Admin */}
       {userRole !== UserRole.CLIENT && (
-        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} config={systemConfig} onLogout={handleLogout} />
+        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} config={systemConfig} userRole={userRole} onLogout={handleLogout} />
       )}
 
       {/* Client Portal Header */}
@@ -625,7 +780,7 @@ const App: React.FC = () => {
         className={`
           flex-1 w-full mx-auto overflow-x-hidden relative pb-10 transition-all duration-300
           px-3 sm:px-6
-          ${userRole !== UserRole.CLIENT ? 'pt-20 sm:pt-28' : 'pt-4'}
+          ${userRole !== UserRole.CLIENT ? 'pt-16 lg:pt-6 lg:pr-[300px]' : 'pt-4'}
         `}
         style={{ maxWidth: '100vw' }}
       >

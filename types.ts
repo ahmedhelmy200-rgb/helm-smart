@@ -1,7 +1,8 @@
 
 export enum UserRole {
   ADMIN = 'ADMIN',
-  FINANCE = 'FINANCE',
+  ASSISTANT = 'ASSISTANT',
+  ACCOUNTANT = 'ACCOUNTANT',
   CLIENT = 'CLIENT'
 }
 
@@ -189,4 +190,22 @@ export interface SystemConfig {
     enableAnalysis: boolean;
     enableWhatsApp: boolean;
   };
+}
+
+export type ReminderSource =
+  | { type: 'manual' }
+  | { type: 'case_hearing'; caseId: string }
+  | { type: 'doc_review'; caseId: string; docId: string };
+
+export interface Reminder {
+  id: string;
+  title: string;
+  dueDate: string; // YYYY-MM-DD
+  dueTime?: string; // HH:MM (optional)
+  note?: string;
+  priority?: 'low' | 'normal' | 'high';
+  done?: boolean;
+  createdAt: string;
+  source: ReminderSource;
+  notifiedAt?: string; // ISO
 }
