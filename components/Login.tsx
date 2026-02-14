@@ -1,7 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Client, SystemConfig, UserRole } from "../types";
-import { isSupabaseEnabled } from "../services/supabase";
-import { fetchMyProfile, signInWithPassword } from "../services/auth";
 
 /**
  * HELM Smart — Premium Login Screen (Single-file replacement)
@@ -66,31 +64,21 @@ export default function Login({ onLogin, clients, config }: Props) {
 
     setLoading(true);
     try {
-      // Professional mode: Supabase Auth (Email/Password) + Profile role
-      if (isSupabaseEnabled) {
-        await signInWithPassword(username.trim(), password);
-        const profile = await fetchMyProfile();
-        if (!profile) throw new Error("لم يتم العثور على ملف المستخدم (profiles). تأكد من تنفيذ SQL الخاص بالـ RLS.");
-
-        setInfo("تم تسجيل الدخول بنجاح.");
-        onLogin(profile.role, {
-          name: profile.display_name || config?.officeName || "مستخدم النظام",
-          title:
-            profile.role === UserRole.ADMIN
-              ? "إدارة المكتب"
-              : profile.role === UserRole.ACCOUNTANT
-              ? "الحسابات"
-              : "المساعد",
-        });
-        return;
-      }
-
-      // Offline/local mode fallback (no Supabase)
+      // Admin only (client portal disabled by design for now)
       const u = username.trim();
       const p = password;
-      if (u !== String(ADMIN_USER) || p !== String(ADMIN_PASS)) throw new Error("بيانات الدخول غير صحيحة.");
+
+      if (u !== String(ADMIN_USER) || p !== String(ADMIN_PASS)) {
+        throw new Error("بيانات الدخول غير صحيحة.");
+      }
+
       setInfo("تم تسجيل الدخول بنجاح.");
-      onLogin(UserRole.ADMIN, { name: config?.officeName || "المدير العام", title: "إدارة المكتب" });
+
+      // Immediately promote App state (this is what unlocks the system UI)
+      onLogin(UserRole.ADMIN, {
+        name: config?.officeName || "المدير العام",
+        title: "إدارة المكتب",
+      });
     } catch (err: any) {
       setError(err?.message || "تعذر تسجيل الدخول. تحقق من البيانات.");
     } finally {

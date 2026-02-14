@@ -1,19 +1,17 @@
 import React, { useMemo, useState } from 'react';
 import { ICONS } from '../constants';
-import { SystemConfig, UserRole } from '../types';
-import { hasPerm } from '../services/rbac';
+import { SystemConfig } from '../types';
 
 type SidebarProps = {
   activeTab: string;
   setActiveTab: (tab: string) => void;
   config?: SystemConfig;
-  userRole: UserRole | null;
   onLogout: () => void;
 };
 
-type Item = { id: string; label: string; icon: any; perm?: Parameters<typeof hasPerm>[1]; hide?: boolean };
+type Item = { id: string; label: string; icon: any; requiresAdmin?: boolean; hide?: boolean };
 
-export default function Sidebar({ activeTab, setActiveTab, config, userRole, onLogout }: SidebarProps) {
+export default function Sidebar({ activeTab, setActiveTab, config, onLogout }: SidebarProps) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   const primary = config?.primaryColor || '#0f172a';
@@ -24,35 +22,35 @@ export default function Sidebar({ activeTab, setActiveTab, config, userRole, onL
 
   const menu: Item[] = useMemo(() => {
     const base: Item[] = [
-      { id: 'dashboard', label: 'الرئيسية', icon: ICONS.Dashboard, perm: 'view_dashboard' },
-      { id: 'cases', label: 'القضايا', icon: ICONS.Cases, perm: 'manage_cases' },
-      { id: 'clients', label: 'الموكلين', icon: ICONS.Clients, perm: 'manage_clients' },
+      { id: 'dashboard', label: 'الرئيسية', icon: ICONS.Dashboard },
+      { id: 'cases', label: 'القضايا', icon: ICONS.Cases },
+      { id: 'clients', label: 'الموكلين', icon: ICONS.Clients },
       { id: 'accounting', label: 'المالية', icon: () => (
         <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
         </svg>
-      ), perm: 'manage_accounting' },
+      ) },
       { id: 'reminders', label: 'التذكيرات', icon: () => (
         <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
         </svg>
-      ), perm: 'manage_reminders' },
+      ) },
       { id: 'search', label: 'بحث شامل', icon: () => (
         <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-4.35-4.35m1.85-5.15a7 7 0 11-14 0 7 7 0 0114 0z" />
         </svg>
-      ), perm: 'view_dashboard' },
-      ...(features.enableAI ? [{ id: 'ai-consultant', label: 'المستشار الذكي', icon: ICONS.AI, perm: 'view_ai' as const }] : []),
-      ...(features.enableAnalysis ? [{ id: 'smart-analysis', label: 'تحليل مستندات', icon: ICONS.DocumentScanner, perm: 'manage_documents' as const }] : []),
-      { id: 'links', label: 'روابط', icon: ICONS.Links, perm: 'view_dashboard' },
+      ) },
+      ...(features.enableAI ? [{ id: 'ai-consultant', label: 'المستشار الذكي', icon: ICONS.AI }] : []),
+      ...(features.enableAnalysis ? [{ id: 'smart-analysis', label: 'تحليل مستندات', icon: ICONS.DocumentScanner }] : []),
+      { id: 'links', label: 'روابط', icon: ICONS.Links },
       { id: 'settings', label: 'الإعدادات', icon: () => (
         <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
         </svg>
-      ), perm: 'manage_settings' },
+      ) },
     ];
-    return base.filter((i) => !i.hide).filter((i) => (i.perm ? hasPerm(userRole, i.perm) : true));
+    return base;
   }, [features.enableAI, features.enableAnalysis]);
 
   const styles: React.CSSProperties = {
