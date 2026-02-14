@@ -12,10 +12,8 @@ import Settings from './components/Settings'; // New Component
 import RemindersPage from './components/reminders/RemindersPage';
 import Login from './components/Login';
 import { Analytics } from '@vercel/analytics/react';
-import { isSupabaseEnabled, supabase } from './services/supabase';
+import { isSupabaseEnabled } from './services/supabase';
 import { kvGet, kvSet } from './services/cloudKv';
-import { fetchMyProfile, signOut as supabaseSignOut } from './services/auth';
-import { hasPerm } from './services/rbac';
 import { LegalCase, CaseStatus, CourtType, Client, Invoice, Expense, UserRole, SystemConfig, SystemLog, Reminder } from './types';
 
 // ... (Data Initialization constants remain same as previous file, omitted for brevity but assumed present)
@@ -104,49 +102,6 @@ const App: React.FC = () => {
 
   // Admin Profile State
   const [adminProfile, setAdminProfile] = useState<{ name: string, title: string } | null>(null);
-
-  // --- Supabase Auth bootstrap (professional roles: ADMIN / ASSISTANT / ACCOUNTANT) ---
-  useEffect(() => {
-    if (!isSupabaseEnabled || !supabase) return;
-
-    let mounted = true;
-
-    const sync = async () => {
-      try {
-        const profile = await fetchMyProfile();
-        if (!mounted) return;
-        if (profile) {
-          setUserRole(profile.role);
-          setAdminProfile({
-            name: profile.display_name || 'مستخدم النظام',
-            title:
-              profile.role === UserRole.ADMIN
-                ? 'إدارة المكتب'
-                : profile.role === UserRole.ACCOUNTANT
-                ? 'الحسابات'
-                : 'المساعد',
-          });
-        } else {
-          // session exists but profile is missing (RLS or onboarding not done) => force logout
-          setUserRole(null);
-          setAdminProfile(null);
-        }
-      } catch {
-        // Keep app usable in offline/local mode
-      }
-    };
-
-    sync();
-
-    const { data: sub } = supabase.auth.onAuthStateChange(() => {
-      sync();
-    });
-
-    return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
-    };
-  }, []);
 
   // Data State
   const [cases, setCases] = useState<LegalCase[]>(() => {
@@ -371,63 +326,18 @@ const App: React.FC = () => {
     setSystemLogs(prev => [...prev, newLog]);
   };
 
-  // Supabase session bootstrapping (Professional Roles)
-  useEffect(() => {
-    let unsub: any = null;
-    if (!isSupabaseEnabled || !supabase) return;
-
-    const bootstrap = async () => {
-      try {
-        const profile = await fetchMyProfile();
-        if (profile?.role) {
-          setUserRole(profile.role);
-          setLoggedInClient(null);
-          setAdminProfile({ name: profile.display_name || 'مستخدم', title: profile.role });
-        }
-      } catch {
-        // ignore: user may be logged out or profiles not ready yet
-      }
-    };
-    bootstrap();
-
-    unsub = supabase.auth.onAuthStateChange(async (_event, session) => {
-      if (!session?.user) {
-        setUserRole(null);
-        setLoggedInClient(null);
-        setAdminProfile(null);
-        return;
-      }
-      try {
-        const profile = await fetchMyProfile();
-        if (profile?.role) {
-          setUserRole(profile.role);
-          setLoggedInClient(null);
-          setAdminProfile({ name: profile.display_name || 'مستخدم', title: profile.role });
-        }
-      } catch {
-        // ignore
-      }
-    });
-
-    return () => {
-      try {
-        unsub?.data?.subscription?.unsubscribe?.();
-      } catch {}
-    };
-  }, []);
-
-  // LOGIN HANDLER (Local fallback when Supabase is disabled)
+  // LOGIN HANDLER
   const handleLogin = (role: UserRole, data?: any) => {
     setUserRole(role);
     if (role === UserRole.CLIENT) {
       setLoggedInClient(data);
       setAdminProfile(null);
       logAction(data.name, 'Client', 'Portal Login');
-    } else {
+    } else if (role === UserRole.ADMIN) {
       setLoggedInClient(null);
       if (data && data.name) {
         setAdminProfile({ name: data.name, title: data.title || 'المدير العام' });
-        logAction(data.name, data.title || 'User', 'System Login');
+        logAction(data.name, data.title || 'Admin', 'System Login');
       } else {
         setAdminProfile({ name: 'المدير العام', title: 'إدارة المكتب' });
         logAction('Unknown Admin', 'Admin', 'System Login');
@@ -436,18 +346,9 @@ const App: React.FC = () => {
   };
 
   // LOGOUT HANDLER
-  const handleLogout = async () => {
+  const handleLogout = () => {
     if (adminProfile) logAction(adminProfile.name, 'Admin', 'Logout');
     else if (loggedInClient) logAction(loggedInClient.name, 'Client', 'Logout');
-
-    if (isSupabaseEnabled) {
-      try { await supabaseSignOut(); } catch { /* ignore */ }
-    }
-
-    if (isSupabaseEnabled) {
-      // fire-and-forget
-      supabaseSignOut().catch(() => void 0);
-    }
 
     setUserRole(null);
     setLoggedInClient(null);
@@ -660,13 +561,11 @@ const App: React.FC = () => {
         }} />;
 
       case 'ai-consultant':
-        if (!hasPerm(userRole, 'view_ai')) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح</div>;
         return <AIConsultant />;
       case 'smart-analysis':
-        if (!hasPerm(userRole, 'view_ai')) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح</div>;
         return <SmartDocumentAnalyzer />;
       case 'accounting':
-        if (!hasPerm(userRole, 'manage_accounting')) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح</div>;
+        if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
         return <Accounting
           invoices={invoices}
           cases={cases}
@@ -684,7 +583,9 @@ const App: React.FC = () => {
       case 'links':
         return <ImportantLinks />;
       case 'settings':
-        if (!hasPerm(userRole, 'manage_settings')) return <div className="p-20 text-center font-bold text-red-500">غير مصرح بالدخول للإعدادات</div>;
+        if (userRole !== UserRole.ADMIN) {
+          return <div className="p-20 text-center font-bold text-red-500">غير مصرح بالدخول للإعدادات</div>;
+        }
         return <Settings
           config={systemConfig}
           onUpdateConfig={(newConf) => {
@@ -754,7 +655,7 @@ const App: React.FC = () => {
     >
       {/* Top Navigation Bar for Admin */}
       {userRole !== UserRole.CLIENT && (
-        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} config={systemConfig} userRole={userRole} onLogout={handleLogout} />
+        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} config={systemConfig} onLogout={handleLogout} />
       )}
 
       {/* Client Portal Header */}
