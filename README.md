@@ -1,89 +1,40 @@
-# HELM Smart — Web + Cloud + PWA (بديل Electron)
+<div align="center">
+<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+</div>
 
-هذه نسخة **Web/PWA** من نظام إدارة مكتب HELM:
-- ✅ يعمل على **أي جهاز** (Windows / Mac / Mobile) عبر المتصفح.
-- ✅ **PWA**: يمكن تثبيته كتطبيق على الهاتف/الكمبيوتر.
-- ✅ جاهز للنشر على **Vercel**.
-- ✅ **مزامنة سحابية** اختيارية عبر **Supabase** (Pull/Push + Auto Sync).
-- ✅ البحث الشامل داخل النظام (**Ctrl + K**).
+# HELM Legal Office (Web + Electron)
 
----
+This repository contains the full source for the HELM Legal Office system (no AI services).
 
-## تشغيل محليًا
+## Run Locally
 
-1) تثبيت الحزم:
-```bash
-npm install
-```
+**Prerequisites:**  Node.js
 
-2) إعداد المتغيرات في `.env.local`:
-- `VITE_SUPABASE_URL`
-- `VITE_SUPABASE_ANON_KEY`
-- `GEMINI_API_KEY` (خاص بالذكاء الاصطناعي — للسيرفر فقط)
 
-3) تشغيل:
-```bash
-npm run dev
-```
+1. Install dependencies:
+   `npm install`
+2. Run the app:
+   `npm run dev`
 
-> ملاحظة: وظائف الذكاء الاصطناعي تعمل عبر **Vercel Serverless** تحت `/api/*`، لذلك محليًا قد يظهر تنبيه بأن الخدمة غير متاحة (هذا طبيعي). لاختبارها محليًا استخدم `vercel dev`.
 
----
+## Supabase Cloud Sync (Secure recommended)
 
-## نشر على Vercel
+### 1) Reset (مسح كل اللي في جدول المزامنة)
+في Supabase Dashboard → SQL Editor:
+- نفّذ الملف: `supabase_reset.sql`
+- ثم نفّذ الملف: `supabase_schema.sql`
 
-- ارفع المشروع على GitHub.
-- اربط المستودع بـ Vercel.
-- أضف في Vercel (Environment Variables):
-  - `GEMINI_API_KEY`
-  - `VITE_SUPABASE_URL`
-  - `VITE_SUPABASE_ANON_KEY`
+### 2) Auth
+في Supabase Dashboard → Authentication:
+- فعّل Email/Password
+- أنشئ مستخدم (Email + Password) من صفحة Users أو Sign Up.
 
-`vercel.json` موجود لتفادي مشاكل الـ SPA Refresh.
+### 3) داخل التطبيق
+Settings → البيانات والنسخ → التخزين السحابي:
+- أدخل Supabase URL و Anon Key (من Project Settings → API)
+- Cloud Auth: أدخل Email/Password واضغط "تسجيل دخول"
+- ثم استخدم:
+  - "رفع إلى السحابة" (على جهاز المصدر)
+  - "استعادة من السحابة" (على جهاز آخر)
 
----
-
-## إعداد Supabase (Cloud Sync)
-
-### 1) إنشاء جدول التخزين
-نفّذ في **SQL Editor** داخل Supabase:
-```sql
-create table if not exists public.helm_kv (
-  key text primary key,
-  data jsonb not null,
-  updated_at timestamptz not null default now()
-);
-
-create or replace function public.touch_updated_at()
-returns trigger as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$ language plpgsql;
-
-drop trigger if exists set_updated_at on public.helm_kv;
-create trigger set_updated_at
-before update on public.helm_kv
-for each row execute procedure public.touch_updated_at();
-```
-
-### 2) الأمان (مهم)
-- هذه النسخة **لا تحتوي تسجيل دخول Supabase Auth** بعد.
-- إذا فعّلت **RLS** بدون سياسات مناسبة، ستفشل القراءة/الكتابة.
-
-للاستخدام الشخصي السريع (غير مُوصى به للإنتاج): اترك RLS **غير مفعّل**.
-
-للإنتاج: فعّل Supabase Auth + RLS وسياسات مقيدة (سنضيف ذلك كترقية لاحقة).
-
----
-
-## البحث الشامل
-- افتح البحث الشامل: **Ctrl + K**
-- يمكنك الانتقال من نتائج البحث لصفحات الموكلين/القضايا/المالية وسيتم تعبئة مربع البحث تلقائيًا.
-
----
-
-## ملاحظات تقنية سريعة
-- مزامنة السحابة **اختيارية** وتُفعّل من: الإعدادات → البيانات والنسخ → المزامنة السحابية.
-- أول مرة: استخدم **Pull** لتحميل بيانات السحابة (أو Push لرفع البيانات الحالية).
+> إذا فعّلت RLS (كما في schema) لازم تسجيل الدخول قبل رفع/استعادة.

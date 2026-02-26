@@ -31,15 +31,19 @@ export interface CaseDocument {
   // Optional classification to make client document libraries easier to manage.
   category?: string;
   uploadDate: string;
-  /**
-   * Stored payload for the document.
-   * Recommended: a Data URL (e.g. data:application/pdf;base64,....)
-   * Backward compatible: may be empty for older records.
-   */
   content?: string;
   status?: 'Signed' | 'Draft';
   description?: string;
   reviewReminder?: string;
+  // File key for IndexedDB local storage (optional)
+  fileKey?: string;
+  // Storage metadata for cloud/local
+  storage?: {
+    provider: 'indexeddb' | 'supabase';
+    bucket?: string;
+    path?: string;
+    size?: number;
+  };
 }
 
 export interface LegalCase {
@@ -91,6 +95,26 @@ export interface Expense {
   description: string;
   status: 'Paid' | 'Pending';
 }
+
+export interface Receipt {
+  id: string;
+  receiptNumber: string;
+  kind: 'in' | 'out';
+  date: string; // YYYY-MM-DD
+  amount: number;
+  method?: string; // Cash/Transfer/Card/etc
+  note?: string;
+
+  // Links (optional)
+  clientId?: string;
+  clientName?: string;
+  caseId?: string;
+  caseNumber?: string;
+  caseTitle?: string;
+  linkedInvoiceId?: string;
+  linkedExpenseId?: string;
+}
+
 
 export interface Client {
   id: string;
@@ -189,7 +213,22 @@ export interface SystemConfig {
     enableAnalysis: boolean;
     enableWhatsApp: boolean;
   };
+
+
+  // Reminder sounds/settings
+  reminderSettings?: {
+    enableSound: boolean;
+    sound: 'beep' | 'chime' | 'bell';
+    volume: number; // 0..1
+  };
+
+  // Cloud documents storage (Supabase Storage) - optional
+  cloudDocuments?: {
+    enableStorageSync: boolean;
+    bucket: string;
+  };
 }
+
 
 export type ReminderSource =
   | { type: 'manual' }

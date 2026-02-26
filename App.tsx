@@ -1,20 +1,21 @@
+
 import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
-import AIConsultant from './components/AIConsultant';
-import SmartDocumentAnalyzer from './components/SmartDocumentAnalyzer';
 import CaseManagement from './components/CaseManagement';
 import ClientManagement from './components/ClientManagement';
 import Accounting from './components/Accounting';
-import GlobalSearch from './components/GlobalSearch';
 import ImportantLinks from './components/ImportantLinks';
 import Settings from './components/Settings'; // New Component
 import RemindersPage from './components/reminders/RemindersPage';
+import TemplatesCenter from './components/TemplatesCenter';
+import ErrorBoundary from './components/ErrorBoundary';
 import Login from './components/Login';
-import { Analytics } from '@vercel/analytics/react';
-import { isSupabaseEnabled } from './services/supabase';
-import { kvGet, kvSet } from './services/cloudKv';
-import { LegalCase, CaseStatus, CourtType, Client, Invoice, Expense, UserRole, SystemConfig, SystemLog, Reminder } from './types';
+import { getCloudConfig, kvGetMany, kvSetMany } from './services/cloudSync';
+import { exportExcelXls, exportPdfViaPrint } from './services/exporter';
+import { playReminderSound, ensureAudioReady } from './services/reminderSound';
+import { DEFAULT_OFFICE_TEMPLATES } from './services/defaultTemplates';
+import { LegalCase, CaseStatus, CourtType, Client, Invoice, Expense, Receipt, UserRole, SystemConfig, SystemLog, Reminder } from './types';
 
 // ... (Data Initialization constants remain same as previous file, omitted for brevity but assumed present)
 // Re-declaring constants for completeness in this file context:
@@ -57,13 +58,13 @@ const INITIAL_CONFIG: SystemConfig = {
   ],
   smartTemplates: {
     whatsappInvoice:
-      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}\nنرفق لكم تفاصيل الفاتورة رقم: {invoiceNumber}\nالقيمة: {amount} د.إ\nالبيان: {description}\n\nيرجى التكرم بالسداد وشكرا لثقتكم.\n{officeName}',
+      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}،\nنرفق لكم تفاصيل الفاتورة رقم: {invoiceNumber}\nالقيمة: {amount} د.إ\nالبيان: {description}\n\nيرجى التكرم بالسداد، وشكرًا لثقتكم.\n{officeName}',
     whatsappPaymentReminder:
-      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}\nنود تذكيركم بوجود مستحقات مالية بقيمة {due} د.إ.\nيرجى التواصل لتسوية المستحقات.\n\nمع التحية\n{officeName}',
+      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}،\nنود تذكيركم بوجود مستحقات مالية بقيمة {due} د.إ.\nيرجى التواصل لتسوية المستحقات.\n\nمع التحية،\n{officeName}',
     whatsappSessionReminder:
-      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}\nتذكير بموعد الجلسة القادمة.\nرقم القضية: {caseNumber}\nالمحكمة: {court}\nالتاريخ: {date}\n\nلأي استفسار يرجى التواصل.\n{officeName}',
+      '*{officeName}*\n\nعزيزي/عزيزتي {clientName}،\nتذكير بموعد الجلسة القادمة.\nرقم القضية: {caseNumber}\nالمحكمة: {court}\nالتاريخ: {date}\n\nلأي استفسار، يرجى التواصل.\n{officeName}',
     whatsappGeneral:
-      '*{officeName}*\n\nمرحبا {clientName}\nنود الاطمئنان عليكم. هل لديكم أي استفسارات قانونية\n\n{officeName}',
+      '*{officeName}*\n\nمرحبًا {clientName}،\nنود الاطمئنان عليكم. هل لديكم أي استفسارات قانونية؟\n\n{officeName}',
     invoiceLineNote:
       'دفعة أتعاب عن القضية رقم: {caseNumber}',
     invoiceFooter:
@@ -71,15 +72,24 @@ const INITIAL_CONFIG: SystemConfig = {
     receiptFooter:
       'هذا السند محرر بواسطة نظام حلم الذكي لإدارة المكتب.\n{officePhone} | {officeEmail} | {officeWebsite}',
   },
-  officeTemplates: [],
+  officeTemplates: DEFAULT_OFFICE_TEMPLATES,
+  reminderSettings: {
+    enableSound: true,
+    sound: 'chime',
+    volume: 0.6,
+  },
+  cloudDocuments: {
+    enableStorageSync: false,
+    bucket: 'helm_docs',
+  },
   invoiceFormatting: {
     prefix: 'INV-',
     suffix: '',
     nextSequence: 1001
   },
   features: {
-    enableAI: true,
-    enableAnalysis: true,
+    enableAI: false,
+    enableAnalysis: false,
     enableWhatsApp: true
   }
 };
@@ -91,207 +101,234 @@ const withSafeConfigDefaults = (saved: Partial<SystemConfig> | null): SystemConf
   if (!merged.caseTypes || merged.caseTypes.length === 0) merged.caseTypes = INITIAL_CONFIG.caseTypes;
   if (!merged.invoiceTemplates || merged.invoiceTemplates.length === 0) merged.invoiceTemplates = INITIAL_CONFIG.invoiceTemplates;
   if (!merged.smartTemplates) merged.smartTemplates = INITIAL_CONFIG.smartTemplates;
+  if (!merged.officeTemplates || merged.officeTemplates.length === 0) merged.officeTemplates = DEFAULT_OFFICE_TEMPLATES;
+  if (!merged.reminderSettings) merged.reminderSettings = INITIAL_CONFIG.reminderSettings;
+  if (!merged.cloudDocuments) merged.cloudDocuments = INITIAL_CONFIG.cloudDocuments;
 
   return merged;
+};
+
+// Robust localStorage parsing & data normalization
+const safeParse = <T,>(key: string, raw: string | null, fallback: T): T => {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    try { localStorage.removeItem(key); } catch {}
+    return fallback;
+  }
+};
+
+const asNumber = (v: any, fallback = 0): number => {
+  const n = typeof v === 'number' ? v : Number(v);
+  return Number.isFinite(n) ? n : fallback;
+};
+
+const normalizeInvoices = (arr: any, fallback: Invoice[]): Invoice[] => {
+  if (!Array.isArray(arr)) return fallback;
+  return arr
+    .filter((x) => x && typeof x === 'object')
+    .map((inv: any) => ({
+      ...inv,
+      amount: asNumber(inv.amount, 0),
+      discountValue: inv.discountValue !== undefined ? asNumber(inv.discountValue, 0) : undefined,
+      finalAmount: inv.finalAmount !== undefined ? asNumber(inv.finalAmount, asNumber(inv.amount, 0)) : undefined,
+    }));
+};
+
+const normalizeExpenses = (arr: any, fallback: Expense[]): Expense[] => {
+  if (!Array.isArray(arr)) return fallback;
+  return arr
+    .filter((x) => x && typeof x === 'object')
+    .map((e: any) => ({
+      ...e,
+      amount: asNumber(e.amount, 0),
+    }));
+};
+
+const normalizeCases = (arr: any, fallback: LegalCase[]): LegalCase[] => {
+  if (!Array.isArray(arr)) return fallback;
+  return arr
+    .filter((x) => x && typeof x === 'object')
+    .map((c: any) => ({
+      ...c,
+      documents: Array.isArray(c.documents) ? c.documents : [],
+      totalFee: asNumber(c.totalFee, 0),
+      paidAmount: asNumber(c.paidAmount, 0),
+    }));
+};
+
+const normalizeClients = (arr: any, fallback: Client[]): Client[] => {
+  if (!Array.isArray(arr)) return fallback;
+  return arr.filter((x) => x && typeof x === 'object') as Client[];
+};
+
+const normalizeReminders = (arr: any): Reminder[] => {
+  if (!Array.isArray(arr)) return [];
+  return arr.filter((x) => x && typeof x === 'object') as Reminder[];
+};
+
+const normalizeReceipts = (arr: any): Receipt[] => {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .filter((x) => x && typeof x === 'object')
+    .map((r: any) => ({
+      ...r,
+      amount: asNumber(r.amount, 0),
+      date: String(r.date || ''),
+      kind: r.kind === 'out' ? 'out' : 'in',
+      method: r.method || 'Cash',
+    }))
+    .filter((r) => !!r.id && !!r.receiptNumber);
 };
 
 const App: React.FC = () => {
   const [userRole, setUserRole] = useState<UserRole | null>(null);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [loggedInClient, setLoggedInClient] = useState<Client | null>(null);
-
+  
   // Admin Profile State
-  const [adminProfile, setAdminProfile] = useState<{ name: string, title: string } | null>(null);
-
+  const [adminProfile, setAdminProfile] = useState<{name: string, title: string} | null>(null);
+  
   // Data State
   const [cases, setCases] = useState<LegalCase[]>(() => {
     const saved = localStorage.getItem('legalmaster_cases');
-    return saved ? JSON.parse(saved) : INITIAL_CASES;
+    const parsed = safeParse<any>('legalmaster_cases', saved, INITIAL_CASES);
+    return normalizeCases(parsed, INITIAL_CASES);
   });
 
-  const [clients, setClients] = useState<Client[]>(() => {
+    const [clients, setClients] = useState<Client[]>(() => {
     const saved = localStorage.getItem('legalmaster_clients');
-    return saved ? JSON.parse(saved) : INITIAL_CLIENTS;
+    const parsed = safeParse<any>('legalmaster_clients', saved, INITIAL_CLIENTS);
+    return normalizeClients(parsed, INITIAL_CLIENTS);
   });
 
-  const [invoices, setInvoices] = useState<Invoice[]>(() => {
+    const [invoices, setInvoices] = useState<Invoice[]>(() => {
     const saved = localStorage.getItem('legalmaster_invoices');
-    return saved ? JSON.parse(saved) : INITIAL_INVOICES;
+    const parsed = safeParse<any>('legalmaster_invoices', saved, INITIAL_INVOICES);
+    return normalizeInvoices(parsed, INITIAL_INVOICES);
   });
 
-  const [expenses, setExpenses] = useState<Expense[]>(() => {
+    const [expenses, setExpenses] = useState<Expense[]>(() => {
     const saved = localStorage.getItem('legalmaster_expenses');
-    return saved ? JSON.parse(saved) : INITIAL_EXPENSES;
+    const parsed = safeParse<any>('legalmaster_expenses', saved, INITIAL_EXPENSES);
+    return normalizeExpenses(parsed, INITIAL_EXPENSES);
   });
 
-  const [reminders, setReminders] = useState<Reminder[]>(() => {
-    const saved = localStorage.getItem('legalmaster_reminders');
-    return saved ? JSON.parse(saved) : [];
+  const [receipts, setReceipts] = useState<Receipt[]>(() => {
+    const saved = localStorage.getItem('legalmaster_receipts');
+    const parsed = safeParse<any>('legalmaster_receipts', saved, []);
+    return normalizeReceipts(parsed);
   });
 
-  const [systemConfig, setSystemConfig] = useState<SystemConfig>(() => {
+    const [systemConfig, setSystemConfig] = useState<SystemConfig>(() => {
     const saved = localStorage.getItem('legalmaster_config');
-    return withSafeConfigDefaults(saved ? JSON.parse(saved) : null);
+    const parsed = safeParse<any>('legalmaster_config', saved, null);
+    return withSafeConfigDefaults(parsed);
   });
 
   // SYSTEM LOGS STATE
-  const [systemLogs, setSystemLogs] = useState<SystemLog[]>(() => {
+    const [systemLogs, setSystemLogs] = useState<SystemLog[]>(() => {
     const savedLogs = localStorage.getItem('legalmaster_logs');
-    return savedLogs ? JSON.parse(savedLogs) : [];
+    return safeParse<SystemLog[]>('legalmaster_logs', savedLogs, []);
   });
 
-  // Cloud Sync (Supabase KV)
-  const [cloudEnabled, setCloudEnabled] = useState<boolean>(() => {
-    return localStorage.getItem('legalmaster_cloud_enabled') === '1';
+  // REMINDERS STATE
+    const [reminders, setReminders] = useState<Reminder[]>(() => {
+    const saved = localStorage.getItem('legalmaster_reminders');
+    const parsed = safeParse<any>('legalmaster_reminders', saved, []);
+    return normalizeReminders(parsed);
   });
 
-  const [cloudStatus, setCloudStatus] = useState<{ lastPull?: string; lastPush?: string; lastError?: string }>({});
-  const cloudReadyRef = useRef<boolean>(false);
+  // Cloud autosync toggle (stored locally)
+  const [cloudAutoSync, setCloudAutoSync] = useState<boolean>(() => localStorage.getItem('helm_cloud_auto_sync') === '1');
+  const [cloudLastSync, setCloudLastSync] = useState<string | null>(() => localStorage.getItem('helm_cloud_last_sync'));
+  const [cloudError, setCloudError] = useState<string | null>(null);
+  const [cloudDirty, setCloudDirty] = useState<boolean>(false);
 
+  const [cloudCfgRev, setCloudCfgRev] = useState(0);
   useEffect(() => {
-    localStorage.setItem('legalmaster_cloud_enabled', cloudEnabled ? '1' : '0');
-  }, [cloudEnabled]);
+    const h = () => setCloudCfgRev(v => v + 1);
+    try { window.addEventListener('helm_cloud_config_changed', h); } catch {}
+    return () => {
+      try { window.removeEventListener('helm_cloud_config_changed', h); } catch {}
+    };
+  }, []);
+  const cloudDirtySkip = useRef(true);
+  useEffect(() => {
+    // لا تعتبر البيانات "غير متزامنة" عند أول تشغيل/تحميل.
+    if (cloudDirtySkip.current) {
+      cloudDirtySkip.current = false;
+      return;
+    }
+    setCloudDirty(true);
+  }, [clients, cases, invoices, expenses, receipts, systemConfig, systemLogs, reminders]);
+
+
+  const hasMounted = useRef(false);
+  useEffect(() => {
+    hasMounted.current = true;
+  }, []);
 
   // Persist Logic
   useEffect(() => localStorage.setItem('legalmaster_cases', JSON.stringify(cases)), [cases]);
   useEffect(() => localStorage.setItem('legalmaster_clients', JSON.stringify(clients)), [clients]);
   useEffect(() => localStorage.setItem('legalmaster_invoices', JSON.stringify(invoices)), [invoices]);
   useEffect(() => localStorage.setItem('legalmaster_expenses', JSON.stringify(expenses)), [expenses]);
-  useEffect(() => localStorage.setItem('legalmaster_reminders', JSON.stringify(reminders)), [reminders]);
+  useEffect(() => localStorage.setItem('legalmaster_receipts', JSON.stringify(receipts)), [receipts]);
   useEffect(() => localStorage.setItem('legalmaster_config', JSON.stringify(systemConfig)), [systemConfig]);
   useEffect(() => localStorage.setItem('legalmaster_logs', JSON.stringify(systemLogs)), [systemLogs]);
+  useEffect(() => localStorage.setItem('legalmaster_reminders', JSON.stringify(reminders)), [reminders]);
+  useEffect(() => localStorage.setItem('helm_cloud_auto_sync', cloudAutoSync ? '1' : '0'), [cloudAutoSync]);
 
-  // Reminder notification loop (runs while app is open)
+
+
+  // Background reminders notification (desktop/browser)
+  const remindersRef = useRef<Reminder[]>(reminders);
+  useEffect(() => { remindersRef.current = reminders; }, [reminders]);
+
+  const configRef = useRef<SystemConfig>(systemConfig);
+  useEffect(() => { configRef.current = systemConfig; }, [systemConfig]);
+
+  // Ensure audio can play after first user gesture (mobile/browser restrictions)
   useEffect(() => {
-    if (userRole !== UserRole.ADMIN) return;
-    // Ask permission lazily
-    try {
-      if ('Notification' in window && Notification.permission === 'default') {
-        Notification.requestPermission().catch(() => {});
-      }
-    } catch {
-      // ignore
-    }
+    const onGesture = () => { void ensureAudioReady(); };
+    window.addEventListener('pointerdown', onGesture, { once: true });
+    return () => window.removeEventListener('pointerdown', onGesture);
+  }, []);
 
+  useEffect(() => {
     const tick = () => {
       const now = new Date();
-      let changed = false;
-      const next = reminders.map(r => {
-        if (r.done) return r;
-        const dtStr = `${r.dueDate}T${r.dueTime || '09:00'}:00`;
-        const due = new Date(dtStr);
-        if (Number.isNaN(due.getTime())) return r;
-        if (due <= now && !r.notifiedAt) {
-          changed = true;
-          try {
-            if ('Notification' in window && Notification.permission === 'granted') {
-              new Notification('HELM Smart — تذكير', { body: r.title });
+      const list = remindersRef.current;
+      const dueIds: string[] = [];
+      for (const r of list) {
+        if (r.done) continue;
+        if (r.notifiedAt) continue;
+        const time = r.dueTime || '09:00';
+        const dt = new Date(`${r.dueDate}T${time}:00`);
+        if (!isNaN(dt.getTime()) && dt.getTime() <= now.getTime()) {
+          dueIds.push(r.id);
+          if (typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'granted') {
+            try {
+              new Notification('تذكير', { body: `${r.title}\n${r.dueDate}${r.dueTime ? ' • ' + r.dueTime : ''}` });
+            } catch {
+              // ignore
             }
-          } catch {
-            // ignore
           }
-          return { ...r, notifiedAt: new Date().toISOString() };
         }
-        return r;
-      });
-      if (changed) setReminders(next);
+      }
+      if (dueIds.length) {
+        // صوت التذكير (مرة واحدة لكل دورة)
+        try { playReminderSound(configRef.current); } catch {}
+        setReminders(prev => prev.map(r => dueIds.includes(r.id) ? { ...r, notifiedAt: new Date().toISOString() } : r));
+      }
     };
 
-    const id = window.setInterval(tick, 20000);
+    tick();
+    const id = window.setInterval(tick, 60 * 1000);
     return () => window.clearInterval(id);
-  }, [userRole, reminders]);
-
-  /**
-   * Data integrity guardrail:
-   *  - Ensure every client has at least one case (so no invoice becomes "بدون قضية").
-   *  - Ensure every invoice has a valid caseId/caseTitle linked to its client.
-   *  - Dedupe expenses to avoid "تكرar المصاريف" when multiple imports happen.
-   */
-  useEffect(() => {
-    // Build map of existing cases per client.
-    const casesByClient = new Map<string, LegalCase[]>();
-    for (const c of cases) {
-      const arr = casesByClient.get(c.clientId) || [];
-      arr.push(c);
-      casesByClient.set(c.clientId, arr);
-    }
-
-    let casesChanged = false;
-    let invoicesChanged = false;
-
-    const newCases: LegalCase[] = [...cases];
-    const defaultCaseIdByClient = new Map<string, LegalCase>();
-
-    // Create default cases for clients that have none.
-    clients.forEach((cl, idx) => {
-      const existing = casesByClient.get(cl.id) || [];
-      let chosen = existing[0];
-      if (!chosen) {
-        casesChanged = true;
-        const num = String(idx + 1); // 1..N (editable later)
-        chosen = {
-          id: `auto_case_${cl.id}`,
-          caseNumber: num,
-          title: 'ملف افتراضي - متابعة مالية',
-          clientId: cl.id,
-          clientName: cl.name,
-          opponentName: '',
-          court: CourtType.DUBAI,
-          status: CaseStatus.ACTIVE,
-          nextHearingDate: '',
-          assignedLawyer: '',
-          createdAt: new Date().toISOString().split('T')[0],
-          documents: [],
-          totalFee: 0,
-          paidAmount: 0,
-        };
-        newCases.unshift(chosen);
-      }
-      defaultCaseIdByClient.set(cl.id, chosen);
-    });
-
-    // Fix invoices missing or invalid case links.
-    const validCaseIds = new Set(newCases.map(c => c.id));
-    const newInvoices = invoices.map(inv => {
-      if (!inv.clientId) return inv;
-      const def = defaultCaseIdByClient.get(inv.clientId);
-      if (!def) return inv;
-      if (!inv.caseId || !validCaseIds.has(inv.caseId)) {
-        invoicesChanged = true;
-        return { ...inv, caseId: def.id, caseTitle: def.title, clientName: inv.clientName || def.clientName };
-      }
-      if (!inv.caseTitle) {
-        const c = newCases.find(x => x.id === inv.caseId);
-        if (c) {
-          invoicesChanged = true;
-          return { ...inv, caseTitle: c.title, clientName: inv.clientName || c.clientName };
-        }
-      }
-      return inv;
-    });
-
-    if (casesChanged) setCases(newCases);
-    if (invoicesChanged) setInvoices(newInvoices);
-
-    // Dedupe expenses
-    setExpenses(prev => {
-      const seen = new Set<string>();
-      const out: Expense[] = [];
-      for (const e of prev) {
-        const d = (e.date || '').slice(0, 10);
-        const amt = Number(e.amount || 0).toFixed(2);
-        const cat = (e.category || '').trim().toLowerCase();
-        const desc = (e.description || '').trim().toLowerCase();
-        const key = `${d}__${amt}__${cat}__${desc}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          out.push(e);
-        }
-      }
-      return out;
-    });
-  }, [clients, cases, invoices]);
-
+  }, []);
   // Tab switching based on role
   useEffect(() => {
     if (userRole === UserRole.CLIENT) {
@@ -299,19 +336,6 @@ const App: React.FC = () => {
     } else if (userRole === UserRole.ADMIN) {
       setActiveTab('dashboard');
     }
-  }, [userRole]);
-
-  // Global Search shortcut (Ctrl/Cmd + K)
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      const key = (e.key || '').toLowerCase();
-      if ((e.ctrlKey || e.metaKey) && key === 'k') {
-        e.preventDefault();
-        if (userRole !== UserRole.CLIENT) setActiveTab('search');
-      }
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
   }, [userRole]);
 
   // LOGGER FUNCTION
@@ -347,62 +371,40 @@ const App: React.FC = () => {
 
   // LOGOUT HANDLER
   const handleLogout = () => {
-    if (adminProfile) logAction(adminProfile.name, 'Admin', 'Logout');
-    else if (loggedInClient) logAction(loggedInClient.name, 'Client', 'Logout');
-
+    if(adminProfile) logAction(adminProfile.name, 'Admin', 'Logout');
+    else if(loggedInClient) logAction(loggedInClient.name, 'Client', 'Logout');
+    
     setUserRole(null);
     setLoggedInClient(null);
     setAdminProfile(null);
     setActiveTab('dashboard');
   };
 
+
   // Action Handlers
   const handleAddCase = (newCase: LegalCase) => setCases([newCase, ...cases]);
   const handleUpdateCase = (updatedCase: LegalCase) => setCases(cases.map(c => c.id === updatedCase.id ? updatedCase : c));
   const handleDeleteCase = (caseId: string) => {
-    setCases(cases.filter(c => c.id !== caseId));
-    if (adminProfile) logAction(adminProfile.name, 'Admin', `Deleted Case ID: ${caseId}`);
+      setCases(cases.filter(c => c.id !== caseId));
+      if(adminProfile) logAction(adminProfile.name, 'Admin', `Deleted Case ID: ${caseId}`);
   };
 
   const handleAddClient = (newClient: Client) => setClients([newClient, ...clients]);
   const handleUpdateClient = (updatedClient: Client) => setClients(clients.map(c => c.id === updatedClient.id ? updatedClient : c));
-
+  
   const handleDeleteClient = (clientId: string) => {
-    if (confirm('هل أنت متأكد من حذف هذا الموكل سيتم حذف جميع القضايا والفواتير المرتبطة به.')) {
+    if (confirm('هل أنت متأكد من حذف هذا الموكل؟ سيتم حذف جميع القضايا والفواتير المرتبطة به.')) {
       setClients(clients.filter(c => c.id !== clientId));
       setCases(cases.filter(c => c.clientId !== clientId));
       setInvoices(invoices.filter(i => i.clientId !== clientId));
-      if (adminProfile) logAction(adminProfile.name, 'Admin', `Deleted Client ID: ${clientId}`);
+      if(adminProfile) logAction(adminProfile.name, 'Admin', `Deleted Client ID: ${clientId}`);
     }
   };
 
   const handleAddInvoice = (newInvoice: Invoice) => setInvoices([newInvoice, ...invoices]);
-
-  const normalizeExpenseKey = (e: Expense) => {
-    const d = (e.date || '').slice(0, 10);
-    const amt = Number(e.amount || 0).toFixed(2);
-    const cat = (e.category || '').trim().toLowerCase();
-    const desc = (e.description || '').trim().toLowerCase();
-    return `${d}__${amt}__${cat}__${desc}`;
-  };
-
-  const dedupeExpenses = (arr: Expense[]) => {
-    const seen = new Set<string>();
-    const out: Expense[] = [];
-    for (const e of arr) {
-      const key = normalizeExpenseKey(e);
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push(e);
-      }
-    }
-    return out;
-  };
-
-  const handleAddExpense = (newExp: Expense) => setExpenses(prev => dedupeExpenses([newExp, ...prev]));
-  const handleUpdateExpense = (updated: Expense) => setExpenses(prev => dedupeExpenses(prev.map(e => e.id === updated.id ? updated : e)));
-  const handleDeleteExpense = (expId: string) => setExpenses(prev => prev.filter(e => e.id !== expId));
+  const handleAddExpense = (newExp: Expense) => setExpenses([newExp, ...expenses]);
   const handleUpdateInvoice = (updatedInvoice: Invoice) => setInvoices(invoices.map(inv => inv.id === updatedInvoice.id ? updatedInvoice : inv));
+  const handleAddReceipt = (newReceipt: Receipt) => setReceipts([newReceipt, ...receipts]);
 
   const handleBackup = () => {
     const backupData = {
@@ -414,9 +416,11 @@ const App: React.FC = () => {
       cases,
       invoices,
       expenses,
-      logs: systemLogs
+      receipts,
+      logs: systemLogs,
+      reminders
     };
-
+    
     const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -425,26 +429,139 @@ const App: React.FC = () => {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    if (adminProfile) logAction(adminProfile.name, 'Admin', 'System Backup Downloaded');
+    if(adminProfile) logAction(adminProfile.name, 'Admin', 'System Backup Downloaded');
+  };
+
+
+  const handleExportExcel = () => {
+    try {
+      const sections = [
+        {
+          title: 'الموكلين',
+          headers: ['ID', 'الاسم', 'النوع', 'الهاتف', 'البريد', 'رقم الهوية', 'العنوان', 'تاريخ الإضافة', 'ملاحظات', 'عدد المستندات'],
+          rows: clients.map(c => [
+            c.id, c.name, c.type, c.phone || '', c.email || '', c.emiratesId || '',
+            c.address || '', c.createdAt || '', c.notes || '', (c.documents || []).length
+          ])
+        },
+        {
+          title: 'القضايا',
+          headers: ['ID', 'رقم القضية', 'عنوان القضية', 'الموكل', 'الخصم', 'المحكمة', 'الحالة', 'الجلسة القادمة', 'المحامي', 'الرسوم', 'المدفوع', 'عدد المستندات'],
+          rows: cases.map(k => [
+            k.id, k.caseNumber || '', k.title || '', k.clientName || '', k.opponentName || '',
+            k.court || '', k.status || '', k.nextHearingDate || '', k.assignedLawyer || '',
+            k.totalFee ?? 0, k.paidAmount ?? 0, (k.documents || []).length
+          ])
+        },
+        {
+          title: 'الفواتير',
+          headers: ['ID', 'رقم الفاتورة', 'الموكل', 'القضية', 'المبلغ', 'التاريخ', 'الحالة', 'الوصف'],
+          rows: invoices.map(i => [
+            i.id, i.invoiceNumber, i.clientName, i.caseTitle, i.amount, i.date, i.status, i.description || ''
+          ])
+        },
+        {
+          title: 'الإيصالات',
+          headers: ['ID', 'رقم السند', 'النوع', 'المبلغ', 'التاريخ', 'الطريقة', 'الموكل', 'القضية', 'بيان'],
+          rows: receipts.map(r => [
+            r.id,
+            r.receiptNumber,
+            r.kind === 'out' ? 'صرف' : 'قبض',
+            r.amount,
+            r.date,
+            r.method || '',
+            r.clientName || '',
+            r.caseTitle || '',
+            r.note || ''
+          ])
+        },
+        {
+          title: 'المصروفات',
+          headers: ['ID', 'التاريخ', 'التصنيف', 'القيمة', 'الحالة', 'البيان'],
+          rows: expenses.map(e => [
+            e.id, e.date, e.category, e.amount, e.status, e.description || ''
+          ])
+        },
+        {
+          title: 'التذكيرات',
+          headers: ['ID', 'العنوان', 'التاريخ', 'الوقت', 'الأولوية', 'تم', 'ملاحظات'],
+          rows: reminders.map(r => [
+            r.id, r.title, r.dueDate, r.dueTime || '', r.priority || '', r.done ? 'نعم' : 'لا', r.note || ''
+          ])
+        }
+      ];
+
+      exportExcelXls(`HelmSmart_Export_${new Date().toISOString().slice(0,10)}`, sections);
+    } catch (e: any) {
+      alert('فشل تصدير Excel.');
+    }
+  };
+
+  const handleExportPdf = () => {
+    const esc = (s: any) => String(s ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+
+    const table = (title: string, headers: string[], rows: any[][]) => {
+      const thead = `<tr>${headers.map(h => `<th>${esc(h)}</th>`).join('')}</tr>`;
+      const tbody = rows.map(r => `<tr>${r.map(c => `<td>${esc(c)}</td>`).join('')}</tr>`).join('');
+      return `
+        <h1 style="font-size:18px;margin:18px 0 10px">${esc(title)}</h1>
+        <table dir="rtl">
+          <thead>${thead}</thead>
+          <tbody>${tbody}</tbody>
+        </table>
+      `;
+    };
+
+    const style = `
+      <style>
+        table{border-collapse:collapse;width:100%;font-size:12px;margin:8px 0 18px}
+        th,td{border:1px solid #ddd;padding:6px;vertical-align:top;white-space:pre-wrap}
+        th{background:#f3f4f6;font-weight:700}
+      </style>
+    `;
+
+    const html =
+      style +
+      `<div dir="rtl">
+        <h1 style="font-size:22px;margin:0 0 4px">${esc(systemConfig.officeName || 'تقرير')}</h1>
+        <div style="color:#6b7280;font-size:12px;margin-bottom:14px">تاريخ التصدير: ${esc(new Date().toLocaleString('en-AE'))}</div>
+        ${table('الموكلين', ['الاسم','الهاتف','البريد','الهوية','ملاحظات'], clients.map(c => [c.name, c.phone||'', c.email||'', c.emiratesId||'', c.notes||'']))}
+        ${table('القضايا', ['رقم القضية','العنوان','الموكل','المحكمة','الحالة','الجلسة'], cases.map(k => [k.caseNumber||'', k.title||'', k.clientName||'', k.court||'', k.status||'', k.nextHearingDate||'']))}
+        ${table('الفواتير', ['رقم','الموكل','القضية','المبلغ','التاريخ','الحالة'], invoices.map(i => [i.invoiceNumber, i.clientName, i.caseTitle, i.amount, i.date, i.status]))}
+        ${table('الإيصالات', ['رقم','النوع','المبلغ','التاريخ','الطريقة','الموكل','القضية','البيان'], receipts.map(r => [r.receiptNumber, r.kind==='out'?'صرف':'قبض', r.amount, r.date, r.method||'', r.clientName||'', r.caseTitle||'', r.note||'']))}
+        ${table('المصروفات', ['التاريخ','التصنيف','القيمة','الحالة','البيان'], expenses.map(e => [e.date, e.category, e.amount, e.status, e.description||'']))}
+        ${table('التذكيرات', ['العنوان','التاريخ','الوقت','الأولوية','تم'], reminders.map(r => [r.title, r.dueDate, r.dueTime||'', r.priority||'', r.done?'نعم':'لا']))}
+      </div>`;
+
+    exportPdfViaPrint('HelmSmart Export', html);
   };
 
   const handleRestore = (data: any) => {
+    // Restore is intentionally tolerant: it accepts both the new backup format
+    // and older backups that might not contain all fields.
     try {
       const restoredConfig = data?.config ? withSafeConfigDefaults(data.config) : systemConfig;
       const restoredClients = Array.isArray(data?.clients) ? data.clients : clients;
       const restoredCases = Array.isArray(data?.cases) ? data.cases : cases;
       const restoredInvoices = Array.isArray(data?.invoices) ? data.invoices : invoices;
       const restoredExpenses = Array.isArray(data?.expenses) ? data.expenses : expenses;
-      const restoredReminders = Array.isArray(data?.reminders) ? data.reminders : reminders;
+      const restoredReceipts = Array.isArray(data?.receipts) ? data.receipts : receipts;
       const restoredLogs = Array.isArray(data?.logs) ? data.logs : systemLogs;
+      const restoredReminders = Array.isArray(data?.reminders) ? data.reminders : reminders;
 
       setSystemConfig(restoredConfig);
       setClients(restoredClients);
       setCases(restoredCases);
       setInvoices(restoredInvoices);
       setExpenses(restoredExpenses);
-      setReminders(restoredReminders);
+      setReceipts(restoredReceipts);
       setSystemLogs(restoredLogs);
+      setReminders(restoredReminders);
 
       logAction(adminProfile?.name || 'Admin', 'Admin', 'System Backup Restored');
       alert('✅ تم استعادة النسخة الاحتياطية بنجاح.');
@@ -453,168 +570,146 @@ const App: React.FC = () => {
     }
   };
 
-  // Cloud Sync Actions
-  const cloudPull = async () => {
-    if (!cloudEnabled) return;
-    if (!isSupabaseEnabled) {
-      setCloudStatus({ lastError: 'Supabase not configured' });
-      alert('Supabase غير معد. ضع VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY أولا.');
-      return;
-    }
 
+  // CLOUD SYNC (Supabase KV)
+  const handleCloudUpload = async (silent = false) => {
     try {
-      setCloudStatus(prev => ({ ...prev, lastError: undefined }));
+      setCloudError(null);
+      const cfg = getCloudConfig();
+      if (!cfg) {
+        if (!silent) alert('لم يتم إعداد التخزين السحابي. أدخل بيانات Supabase من الإعدادات.');
+        return;
+      }
 
-      const [rClients, rCases, rInvoices, rExpenses, rReminders, rConfig, rLogs] = await Promise.all([
-        kvGet('clients'),
-        kvGet('cases'),
-        kvGet('invoices'),
-        kvGet('expenses'),
-        kvGet('reminders'),
-        kvGet('config'),
-        kvGet('logs')
-      ]);
+      const rows = [
+        { key: 'legalmaster_config', value: systemConfig },
+        { key: 'legalmaster_clients', value: clients },
+        { key: 'legalmaster_cases', value: cases },
+        { key: 'legalmaster_invoices', value: invoices },
+        { key: 'legalmaster_expenses', value: expenses },
+        { key: 'legalmaster_receipts', value: receipts },
+        { key: 'legalmaster_logs', value: systemLogs },
+        { key: 'legalmaster_reminders', value: reminders },
+      ];
 
-      if (rClients?.data) setClients(rClients.data as Client[]);
-      if (rCases?.data) setCases(rCases.data as LegalCase[]);
-      if (rInvoices?.data) setInvoices(rInvoices.data as Invoice[]);
-      if (rExpenses?.data) setExpenses(rExpenses.data as Expense[]);
-      if (rReminders?.data) setReminders(rReminders.data as Reminder[]);
-      if (rConfig?.data) setSystemConfig(withSafeConfigDefaults(rConfig.data as any));
-      if (rLogs?.data) setSystemLogs(rLogs.data as SystemLog[]);
-
-      cloudReadyRef.current = true;
-      setCloudStatus(prev => ({ ...prev, lastPull: new Date().toISOString() }));
-      logAction(adminProfile?.name || 'Admin', 'Admin', 'Cloud Pull');
+      await kvSetMany(rows as any, cfg as any);
+      const t = new Date().toISOString();
+      localStorage.setItem('helm_cloud_last_sync', t);
+      setCloudLastSync(t);
+      setCloudDirty(false);
+      if (!silent) alert('تم رفع البيانات إلى السحابة بنجاح.');
     } catch (e: any) {
-      const msg = e?.message || String(e);
-      setCloudStatus(prev => ({ ...prev, lastError: msg }));
-      alert('فشل تحميل البيانات من السحابة.\n' + msg);
+      const msg = e?.message || 'Cloud sync failed';
+      setCloudError(msg);
+      if (!silent) alert(`فشل رفع البيانات للسحابة: ${msg}`);
     }
   };
 
-  const cloudPush = async () => {
-    if (!cloudEnabled) return;
-    if (!isSupabaseEnabled) {
-      setCloudStatus({ lastError: 'Supabase not configured' });
-      alert('Supabase غير معد. ضع VITE_SUPABASE_URL و VITE_SUPABASE_ANON_KEY أولا.');
-      return;
-    }
-
+  const handleCloudRestore = async () => {
     try {
-      setCloudStatus(prev => ({ ...prev, lastError: undefined }));
+      setCloudError(null);
+      const cfg = getCloudConfig();
+      if (!cfg) return alert('لم يتم إعداد التخزين السحابي.');
 
-      await Promise.all([
-        kvSet('clients', clients),
-        kvSet('cases', cases),
-        kvSet('invoices', invoices),
-        kvSet('expenses', expenses),
-        kvSet('reminders', reminders),
-        kvSet('config', systemConfig),
-        kvSet('logs', systemLogs)
-      ]);
+      const keys = [
+        'legalmaster_config',
+        'legalmaster_clients',
+        'legalmaster_cases',
+        'legalmaster_invoices',
+        'legalmaster_expenses',
+        'legalmaster_logs',
+        'legalmaster_reminders',
+      ];
+      const rows = await kvGetMany(keys, cfg as any);
+      const map = new Map(rows.map(r => [r.key, (r as any).value]));
 
-      cloudReadyRef.current = true;
-      setCloudStatus(prev => ({ ...prev, lastPush: new Date().toISOString() }));
-      logAction(adminProfile?.name || 'Admin', 'Admin', 'Cloud Push');
+      const payload = {
+        config: map.get('legalmaster_config'),
+        clients: map.get('legalmaster_clients'),
+        cases: map.get('legalmaster_cases'),
+        invoices: map.get('legalmaster_invoices'),
+        expenses: map.get('legalmaster_expenses'),
+        logs: map.get('legalmaster_logs'),
+        reminders: map.get('legalmaster_reminders'),
+      };
+
+      if (confirm('سيتم استبدال البيانات الحالية بما هو موجود في السحابة. هل تود الاستمرار؟')) {
+        handleRestore(payload);
+        setCloudDirty(false);
+        alert('تمت الاستعادة من السحابة.');
+      }
     } catch (e: any) {
-      const msg = e?.message || String(e);
-      setCloudStatus(prev => ({ ...prev, lastError: msg }));
-      alert('فشل رفع البيانات للسحابة.\n' + msg);
+      const msg = e?.message || 'Cloud restore failed';
+      setCloudError(msg);
+      alert(`فشل الاستعادة من السحابة: ${msg}`);
     }
   };
 
-  // Auto cloud pull after admin login (one-time unless you Pull/Push manually)
+  // Auto Sync (debounced)
+  const cloudSyncTimer = useRef<number | null>(null);
+  const cloudSyncBusy = useRef(false);
+
   useEffect(() => {
-    if (userRole !== UserRole.ADMIN) return;
-    if (!cloudEnabled || !isSupabaseEnabled) return;
-    if (cloudReadyRef.current) return;
-    void cloudPull();
-  }, [userRole, cloudEnabled, isSupabaseEnabled]);
+    if (!cloudAutoSync) return;
+    if (!getCloudConfig()) return;
 
-  // Auto cloud push (debounced)
-  useEffect(() => {
-    if (!cloudEnabled || !isSupabaseEnabled) return;
-    if (!cloudReadyRef.current) return;
+    if (cloudSyncTimer.current) window.clearTimeout(cloudSyncTimer.current);
+    cloudSyncTimer.current = window.setTimeout(async () => {
+      if (cloudSyncBusy.current) return;
+      cloudSyncBusy.current = true;
+      try {
+        await handleCloudUpload(true);
+      } finally {
+        cloudSyncBusy.current = false;
+      }
+    }, 3000);
 
-    const t = window.setTimeout(() => {
-      void cloudPush();
-    }, 2000);
-
-    return () => window.clearTimeout(t);
-  }, [cloudEnabled, isSupabaseEnabled, clients, cases, invoices, expenses, reminders, systemConfig, systemLogs]);
+    return () => {
+      if (cloudSyncTimer.current) window.clearTimeout(cloudSyncTimer.current);
+    };
+  }, [cloudAutoSync, clients, cases, invoices, expenses, receipts, systemConfig, systemLogs, reminders]);
 
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard':
-        if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
+        if (userRole === UserRole.CLIENT)
+          return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
         return <Dashboard cases={cases} clients={clients} invoices={invoices} expenses={expenses} userRole={userRole} config={systemConfig} />;
-      case 'reminders':
-        if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
-        return <RemindersPage reminders={reminders} setReminders={setReminders} cases={cases} clients={clients} />;
 
-      case 'search':
-        if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
-        return <GlobalSearch clients={clients} cases={cases} invoices={invoices} expenses={expenses} onNavigate={(tab, query) => {
-          localStorage.setItem('legalmaster_nav_query', JSON.stringify({ tab, query }));
-          setActiveTab(tab);
-        }} />;
-
-      case 'ai-consultant':
-        return <AIConsultant />;
-      case 'smart-analysis':
-        return <SmartDocumentAnalyzer />;
-      case 'accounting':
-        if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
-        return <Accounting
-          invoices={invoices}
-          cases={cases}
-          expenses={expenses}
-          onAddInvoice={handleAddInvoice}
-          onUpdateInvoice={handleUpdateInvoice}
-          onAddExpense={handleAddExpense}
-          onUpdateExpense={handleUpdateExpense}
-          onDeleteExpense={handleDeleteExpense}
-          clients={clients}
-          onUpdateClient={handleUpdateClient}
-          config={systemConfig}
-          onUpdateConfig={setSystemConfig}
-        />;
-      case 'links':
-        return <ImportantLinks />;
-      case 'settings':
-        if (userRole !== UserRole.ADMIN) {
-          return <div className="p-20 text-center font-bold text-red-500">غير مصرح بالدخول للإعدادات</div>;
-        }
-        return <Settings
-          config={systemConfig}
-          onUpdateConfig={(newConf) => {
-            setSystemConfig(newConf);
-            logAction(adminProfile?.name || 'Admin', 'Admin', 'Updated System Settings');
-          }}
-          onBackup={handleBackup}
-          onRestore={handleRestore}
-          logs={systemLogs}
-          supabaseEnabled={isSupabaseEnabled}
-          cloudEnabled={cloudEnabled}
-          cloudStatus={cloudStatus}
-          onToggleCloudEnabled={setCloudEnabled}
-          onCloudPull={() => { void cloudPull(); }}
-          onCloudPush={() => { void cloudPush(); }}
-        />;
       case 'cases':
-        if (userRole === UserRole.CLIENT) return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
-        return <CaseManagement
-          cases={cases}
-          clients={clients}
-          onAddCase={handleAddCase}
-          onUpdateCase={handleUpdateCase}
-          onDeleteCase={handleDeleteCase}
-          onAddClient={handleAddClient}
-        />;
+        if (userRole === UserRole.CLIENT)
+          return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
+        return (
+          <CaseManagement
+            cases={cases}
+            clients={clients}
+            config={systemConfig}
+            onAddCase={handleAddCase}
+            onUpdateCase={handleUpdateCase}
+            onDeleteCase={handleDeleteCase}
+            onAddClient={handleAddClient}
+          />
+        );
+
       case 'clients':
         if (userRole === UserRole.CLIENT && loggedInClient) {
-          return <ClientManagement
+          return (
+            <ClientManagement
+              clients={clients}
+              cases={cases}
+              invoices={invoices}
+              config={systemConfig}
+              onAddClient={handleAddClient}
+              onAddCase={handleAddCase}
+              onUpdateClient={handleUpdateClient}
+              onDeleteClient={() => {}}
+              onAddInvoice={() => {}}
+              viewOnlyClientId={loggedInClient.id}
+            />
+          );
+        }
+        return (
+          <ClientManagement
             clients={clients}
             cases={cases}
             invoices={invoices}
@@ -622,81 +717,117 @@ const App: React.FC = () => {
             onAddClient={handleAddClient}
             onAddCase={handleAddCase}
             onUpdateClient={handleUpdateClient}
-            onDeleteClient={() => { }}
-            onAddInvoice={() => { }}
-            viewOnlyClientId={loggedInClient.id}
-          />;
-        }
-        return <ClientManagement
-          clients={clients}
-          cases={cases}
-          invoices={invoices}
-          config={systemConfig}
-          onAddClient={handleAddClient}
-          onAddCase={handleAddCase}
-          onUpdateClient={handleUpdateClient}
-          onDeleteClient={handleDeleteClient}
-          onAddInvoice={handleAddInvoice}
-        />;
+            onDeleteClient={handleDeleteClient}
+            onAddInvoice={handleAddInvoice}
+          />
+        );
+
+      case 'reminders':
+        return <RemindersPage reminders={reminders} setReminders={setReminders} cases={cases} clients={clients} />;
+
+      case 'templates':
+        if (userRole !== UserRole.ADMIN) return <div className="p-20 text-center font-bold text-red-500">غير مصرح بالدخول للنماذج</div>;
+        return <TemplatesCenter config={systemConfig} onUpdateConfig={setSystemConfig} />;
+
+      case 'accounting':
+        if (userRole === UserRole.CLIENT)
+          return <div className="text-center p-20 font-bold text-slate-500">غير مصرح بالدخول لهذه الصفحة</div>;
+        return (
+          <Accounting
+            invoices={invoices}
+            cases={cases}
+            expenses={expenses}
+            receipts={receipts}
+            clients={clients}
+            onAddInvoice={handleAddInvoice}
+            onUpdateInvoice={handleUpdateInvoice}
+            onAddExpense={handleAddExpense}
+            onAddReceipt={handleAddReceipt}
+            onUpdateClient={handleUpdateClient}
+            config={systemConfig}
+            onUpdateConfig={setSystemConfig}
+          />
+        );
+
+      case 'links':
+        return <ImportantLinks />;
+
+      case 'settings':
+        if (userRole !== UserRole.ADMIN) return <div className="p-20 text-center font-bold text-red-500">غير مصرح بالدخول للإعدادات</div>;
+        return (
+          <Settings
+            config={systemConfig}
+            onUpdateConfig={(newConf) => {
+              setSystemConfig(newConf);
+              logAction(adminProfile?.name || 'Admin', 'Admin', 'Updated System Settings');
+            }}
+            onBackup={handleBackup}
+            onRestore={handleRestore}
+            onExportExcel={handleExportExcel}
+            onExportPdf={handleExportPdf}
+            logs={systemLogs}
+            onCloudUpload={handleCloudUpload}
+            onCloudRestore={handleCloudRestore}
+            cloudAutoSync={cloudAutoSync}
+            setCloudAutoSync={setCloudAutoSync}
+            cloudLastSync={cloudLastSync}
+            cloudError={cloudError}
+          />
+        );
+
       default:
         return <Dashboard cases={cases} clients={clients} invoices={invoices} expenses={expenses} userRole={userRole} config={systemConfig} />;
     }
   };
 
-  return !userRole ? (
-    <Login onLogin={handleLogin} clients={clients} config={systemConfig} />
-  ) : (
-    <div
+
+  if (!userRole) {
+    return <Login onLogin={handleLogin} clients={clients} config={systemConfig} />;
+  }
+
+  return (
+    <ErrorBoundary>
+    <div 
       className="min-h-screen flex flex-col transition-all duration-500"
-      style={{
-        fontFamily: systemConfig.fontFamily || 'Cairo',
-        backgroundColor: systemConfig.backgroundColor || '#f8fafc'
+      style={{ 
+        fontFamily: systemConfig.fontFamily || 'Cairo', 
+        backgroundColor: systemConfig.backgroundColor || '#f8fafc' 
       }}
     >
+      
       {/* Top Navigation Bar for Admin */}
       {userRole !== UserRole.CLIENT && (
-        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} config={systemConfig} onLogout={handleLogout} />
+        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} config={systemConfig} onLogout={handleLogout} userRole={(userRole === UserRole.ADMIN ? 'ADMIN' : 'STAFF') as any} cloudStatus={{ configured: !!getCloudConfig(), dirty: cloudDirty, lastSync: cloudLastSync, error: cloudError }} />
       )}
-
+      
       {/* Client Portal Header */}
       {userRole === UserRole.CLIENT && (
-        <header className="bg-[#0f172a] text-white p-4 sm:p-6 shadow-xl border-b-4 border-[#d4af37] safe-pt">
-          <div className="max-w-screen-2xl mx-auto flex justify-between items-center">
-            <div>
-              <h1 className="text-xl font-black text-[#d4af37]">بوابة الموكلين</h1>
-              <p className="text-xs text-slate-400">مكتب المستشار أحمد حلمي</p>
-            </div>
-            <button
-              onClick={() => { if (confirm('تسجيل الخروج')) handleLogout(); }}
-              className="text-sm bg-white/10 px-4 py-2 rounded-xl hover:bg-white/20"
-            >
-              خروج
-            </button>
-          </div>
+        <header className="bg-[#0f172a] text-white p-6 shadow-xl border-b-4 border-[#d4af37]">
+           <div className="max-w-screen-2xl mx-auto flex justify-between items-center">
+              <div>
+                 <h1 className="text-xl font-black text-[#d4af37]">بوابة الموكلين</h1>
+                 <p className="text-xs text-slate-400">مكتب المستشار أحمد حلمي</p>
+              </div>
+              <button onClick={() => { if(confirm('تسجيل الخروج؟')) handleLogout(); }} className="text-sm bg-white/10 px-4 py-2 rounded-xl hover:bg-white/20">خروج</button>
+           </div>
         </header>
       )}
-
-      {/* Main Content Area (MOBILE FIX) */}
-      <main
-        className={`
-          flex-1 w-full mx-auto overflow-x-hidden relative pb-10 transition-all duration-300
-          px-3 sm:px-6
-          ${userRole !== UserRole.CLIENT ? 'pt-16 lg:pt-6 lg:pr-[300px]' : 'pt-4'}
-        `}
-        style={{ maxWidth: '100vw' }}
+      
+      {/* Main Content Area - Adjusted top padding to accommodate fixed header */}
+      <main 
+        className={`flex-1 w-full max-w-screen-2xl mx-auto overflow-x-hidden relative pb-10 transition-all duration-300 ${userRole !== UserRole.CLIENT ? 'pt-28' : ''}`}
       >
         {renderContent()}
       </main>
-
-      {/* Admin Footer Info (hide on mobile) */}
+      
+      {/* Admin Footer Info (Optional, kept minimal) */}
       {userRole === UserRole.ADMIN && (
-        <div className="hidden sm:block fixed bottom-4 left-4 z-40 bg-white/80 backdrop-blur-md px-4 py-2 rounded-full shadow-sm border border-slate-100 text-[10px] font-bold text-slate-400 print:hidden">
-          Logged in as: {adminProfile?.name} ({adminProfile?.title})
+        <div className="fixed bottom-4 left-4 z-40 bg-white/80 backdrop-blur-md px-4 py-2 rounded-full shadow-sm border border-slate-100 text-[10px] font-bold text-slate-400 print:hidden">
+           Logged in as: {adminProfile?.name} ({adminProfile?.title})
         </div>
       )}
-
-      <Analytics />
     </div>
+    </ErrorBoundary>
   );
 };
 
