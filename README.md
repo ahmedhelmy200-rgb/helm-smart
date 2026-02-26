@@ -20,10 +20,6 @@ This repository contains the full source for the HELM Legal Office system (no AI
 ## Supabase Cloud Sync (Secure recommended)
 
 ### 1) Reset (مسح كل اللي في جدول المزامنة)
-في Supabase Dashboard → SQL Editor:
-- نفّذ الملف: `supabase_reset.sql`
-- ثم نفّذ الملف: `supabase_schema.sql`
-
 ### 2) Auth
 في Supabase Dashboard → Authentication:
 - فعّل Email/Password
